@@ -50,3 +50,21 @@ def update_profile(user_id: int, profile: schemas.UserProfile, db: Session = Dep
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
     return db_user
+
+
+@app.post("/forgot-password", response_model=schemas.MessageOut)
+def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+    # Always return a generic message to avoid leaking which emails exist
+    token, pr = crud.create_password_reset(db, payload.email)
+    # In a real app, email the token link to the user. For dev, include token in message.
+    if pr:
+        return {"message": f"Password reset link created. Use token: {token}"}
+    return {"message": "If the email exists, a reset link has been sent."}
+
+
+@app.post("/reset-password", response_model=schemas.MessageOut)
+def reset_password(payload: schemas.ResetPasswordRequest, db: Session = Depends(get_db)):
+    ok = crud.reset_password(db, payload.token, payload.new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    return {"message": "Password has been reset successfully"}

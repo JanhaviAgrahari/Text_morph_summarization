@@ -66,6 +66,8 @@ if "show_register" not in st.session_state:
 
 if "registration_success" not in st.session_state:
     st.session_state.registration_success = False
+if "show_forgot" not in st.session_state:
+    st.session_state.show_forgot = False
 
 def switch_to_register():
     st.session_state.show_register = True
@@ -76,7 +78,61 @@ def switch_to_login():
 with col1:
     st.markdown("### 👤 User Authentication")
 
-    if not st.session_state.show_register:
+    if st.session_state.get("show_forgot", False):
+        # Forgot password flow first if toggled
+        st.markdown("#### 🔐 Forgot Password")
+        with st.form("forgot_form"):
+            fp_email = st.text_input("Email", placeholder="user@example.com")
+            get_link = st.form_submit_button("Get Reset Token")
+        if get_link:
+            if not fp_email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", fp_email):
+                st.error("Please enter a valid email address.")
+            else:
+                ok, data = api_post("/forgot-password", {"email": fp_email})
+                if ok:
+                    st.info(data.get("message", "If the email exists, a reset link has been sent."))
+                else:
+                    st.error(data)
+
+        st.divider()
+        st.markdown("##### Reset Password (use token from message)")
+        with st.form("reset_form"):
+            token = st.text_input("Token")
+            new_pw = st.text_input("New Password", type="password")
+            reset_clicked = st.form_submit_button("Reset Password")
+        if reset_clicked:
+            # Reuse client policy
+            def valid_password(p: str) -> tuple[bool, str | None]:
+                if len(p) < 8:
+                    return False, "Password must be at least 8 characters long."
+                if not re.search(r"[A-Z]", p):
+                    return False, "Password must include at least one uppercase letter."
+                if not re.search(r"[a-z]", p):
+                    return False, "Password must include at least one lowercase letter."
+                if not re.search(r"\d", p):
+                    return False, "Password must include at least one number."
+                if not re.search(r"[^A-Za-z0-9]", p):
+                    return False, "Password must include at least one special character."
+                return True, None
+
+            if not token:
+                st.error("Please enter the reset token.")
+            else:
+                ok_pw, err = valid_password(new_pw)
+                if not ok_pw:
+                    st.error(err)
+                else:
+                    ok, data = api_post("/reset-password", {"token": token, "new_password": new_pw})
+                    if ok:
+                        st.success(data.get("message", "Password has been reset."))
+                    else:
+                        st.error(data)
+        # Provide a back-to-login button
+        if st.button("Back to Sign in"):
+            st.session_state.show_forgot = False
+            st.rerun()
+
+    elif not st.session_state.show_register:
         if st.session_state.registration_success:
             st.success("You have registered successfully.")
             st.session_state.registration_success = False
@@ -84,8 +140,13 @@ with col1:
         with st.form("login_form"):
             email = st.text_input("Email", placeholder="user@example.com")
             password = st.text_input("Password", type="password")
-            sign_in = st.form_submit_button("Sign In")
-            create_account_clicked = st.form_submit_button("Create Account")
+            cols = st.columns([1,1,1])
+            with cols[0]:
+                sign_in = st.form_submit_button("Sign In")
+            with cols[1]:
+                create_account_clicked = st.form_submit_button("Create Account")
+            with cols[2]:
+                forgot_clicked = st.form_submit_button("Forgot Password?")
 
         if sign_in:
             # Client-side checks
@@ -105,7 +166,11 @@ with col1:
 
         if create_account_clicked:
             switch_to_register()
-    else:
+        if 'forgot_clicked' in locals() and forgot_clicked:
+            st.session_state.show_register = False
+            st.session_state["show_forgot"] = True
+            st.rerun()
+    elif st.session_state.get("show_register", False):
         with st.form("register_form"):
             reg_email = st.text_input("Email", placeholder="user@example.com")
             reg_password = st.text_input("Password", type="password")
@@ -139,7 +204,6 @@ with col1:
                 else:
                     ok, data = api_post("/register", {"email": reg_email, "password": reg_password})
                     if ok:
-                        # Flip the UI to login and immediately rerun so the toast renders now
                         st.session_state.registration_success = True
                         switch_to_login()
                         st.rerun()
@@ -148,6 +212,7 @@ with col1:
 
         if st.button("Sign in"):
             switch_to_login()
+            st.session_state["show_forgot"] = False
 
 with col2:
     st.markdown("### 👥 Profile Management")
