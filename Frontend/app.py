@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import re
 
 API_URL = "http://127.0.0.1:8000"  # FastAPI backend
 
@@ -87,7 +88,15 @@ with col1:
             create_account_clicked = st.form_submit_button("Create Account")
 
         if sign_in:
-            ok, data = api_post("/login", {"email": email, "password": password})
+            # Client-side checks
+            if not email:
+                st.error("Please enter your email.")
+            elif not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+                st.error("Please enter a valid email address.")
+            elif not password:
+                st.error("Please enter your password.")
+            else:
+                ok, data = api_post("/login", {"email": email, "password": password})
             if ok:
                 st.success("Login successful")
                 st.session_state["user_id"] = data.get("user_id")
@@ -103,12 +112,37 @@ with col1:
             register_clicked = st.form_submit_button("Register")
 
         if register_clicked:
-            ok, data = api_post("/register", {"email": reg_email, "password": reg_password})
-            if ok:
-                st.session_state.registration_success = True
-                switch_to_login()
+            # Client-side validation for email and password complexity
+            def valid_password(p: str) -> tuple[bool, str | None]:
+                if len(p) < 8:
+                    return False, "Password must be at least 8 characters long."
+                if not re.search(r"[A-Z]", p):
+                    return False, "Password must include at least one uppercase letter."
+                if not re.search(r"[a-z]", p):
+                    return False, "Password must include at least one lowercase letter."
+                if not re.search(r"\d", p):
+                    return False, "Password must include at least one number."
+                if not re.search(r"[^A-Za-z0-9]", p):
+                    return False, "Password must include at least one special character."
+                return True, None
+
+            if not reg_email:
+                st.error("Please enter your email.")
+            elif not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", reg_email):
+                st.error("Please enter a valid email address.")
+            elif not reg_password:
+                st.error("Please enter a password.")
             else:
-                st.error(data)
+                ok_pw, err = valid_password(reg_password)
+                if not ok_pw:
+                    st.error(err)
+                else:
+                    ok, data = api_post("/register", {"email": reg_email, "password": reg_password})
+                    if ok:
+                        st.session_state.registration_success = True
+                        switch_to_login()
+                    else:
+                        st.error(data)
 
         if st.button("Sign in"):
             switch_to_login()
