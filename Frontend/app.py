@@ -97,11 +97,11 @@ with col1:
                 st.error("Please enter your password.")
             else:
                 ok, data = api_post("/login", {"email": email, "password": password})
-            if ok:
-                st.success("Login successful")
-                st.session_state["user_id"] = data.get("user_id")
-            else:
-                st.error(data)
+                if ok:
+                    st.success("Login successful")
+                    st.session_state["user_id"] = data.get("user_id")
+                else:
+                    st.error(data)
 
         if create_account_clicked:
             switch_to_register()
@@ -139,8 +139,10 @@ with col1:
                 else:
                     ok, data = api_post("/register", {"email": reg_email, "password": reg_password})
                     if ok:
+                        # Flip the UI to login and immediately rerun so the toast renders now
                         st.session_state.registration_success = True
                         switch_to_login()
+                        st.rerun()
                     else:
                         st.error(data)
 
