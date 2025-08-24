@@ -1,0 +1,17 @@
+streamlit
+fastapi
+uvicorn
+python-jose
+passlib[bcrypt]
+sqlalchemy
+torch
+transformers
+sentencepiece
+nltk
+googletrans==4.0.0-rc1
+pydantic
+httpx
+python-dotenv
+mysql-connector-python
+requests
+email-validator
