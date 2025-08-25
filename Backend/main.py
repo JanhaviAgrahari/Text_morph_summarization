@@ -1,8 +1,12 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi import BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from . import models, schemas, crud
 from .database import engine, SessionLocal, Base
+from .emailer import send_password_reset_email
+import os
+import logging
 
 Base.metadata.create_all(bind=engine)
 
@@ -53,12 +57,21 @@ def update_profile(user_id: int, profile: schemas.UserProfile, db: Session = Dep
 
 
 @app.post("/forgot-password", response_model=schemas.MessageOut)
-def forgot_password(payload: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(payload: schemas.ForgotPasswordRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
     # Always return a generic message to avoid leaking which emails exist
     token, pr = crud.create_password_reset(db, payload.email)
-    # In a real app, email the token link to the user. For dev, include token in message.
-    if pr:
-        return {"message": f"Password reset link created. Use token: {token}"}
+    if pr and token:
+        # Send email in the background to avoid blocking the HTTP response
+        background_tasks.add_task(send_password_reset_email, payload.email, token)
+
+    # Optional developer-friendly hint controlled by env
+    debug = (os.getenv("EMAIL_DEBUG", "false").lower() in {"1", "true", "yes", "on"})
+    if debug and token:
+        logging.getLogger("uvicorn.error").info(
+            f"[EMAIL_DEBUG] Password reset token for {payload.email}: {token}"
+        )
+
+    # Do not reveal if email exists or include any token in the response
     return {"message": "If the email exists, a reset link has been sent."}
 
 

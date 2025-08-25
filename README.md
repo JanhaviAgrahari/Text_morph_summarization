@@ -67,6 +67,18 @@ streamlit run Frontend/app.py
 - The backend loads DB credentials from `Backend/.env` using `python-dotenv`.
 - The SQLAlchemy URL is constructed with password safely URL-encoded.
 - CORS is enabled broadly for local development.
+- To enable email-based Forgot Password, add SMTP settings to `Backend/.env`:
+
+  ```env
+  SMTP_HOST=smtp.gmail.com
+  SMTP_PORT=587
+  SMTP_USER=your_email@gmail.com
+  SMTP_PASSWORD=your_app_password
+  EMAIL_FROM=Your App <your_email@gmail.com>
+  FRONTEND_RESET_URL=http://localhost:8501
+  APP_NAME=TextSummary
+  ```
+  For Gmail, use an App Password (2FA required) and keep these secrets private.
 - CORS is enabled broadly for local development.
 
 ## API (summary)

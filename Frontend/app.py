@@ -68,6 +68,31 @@ if "registration_success" not in st.session_state:
     st.session_state.registration_success = False
 if "show_forgot" not in st.session_state:
     st.session_state.show_forgot = False
+if "reset_token_prefill" not in st.session_state:
+    st.session_state["reset_token_prefill"] = ""
+if "reset_clear_pending" not in st.session_state:
+    st.session_state["reset_clear_pending"] = False
+if "reset_success" not in st.session_state:
+    st.session_state["reset_success"] = False
+if "reset_form_version" not in st.session_state:
+    st.session_state["reset_form_version"] = 0
+
+# If a token is present in the page URL, auto-open Forgot Password and prefill
+try:
+    qp = st.query_params if hasattr(st, "query_params") else st.experimental_get_query_params()
+    if qp and "token" in qp:
+        token_val = qp["token"] if isinstance(qp["token"], str) else (qp["token"][0] if qp["token"] else "")
+        if token_val:
+            st.session_state.show_forgot = True
+            st.session_state["reset_token_prefill"] = token_val
+except Exception:
+    pass
+
+# If a clear is pending from last submission, bump version and clear prefill BEFORE rendering widgets
+if st.session_state.get("reset_clear_pending"):
+    st.session_state["reset_token_prefill"] = ""
+    st.session_state["reset_form_version"] += 1
+    st.session_state["reset_clear_pending"] = False
 
 def switch_to_register():
     st.session_state.show_register = True
@@ -81,6 +106,9 @@ with col1:
     if st.session_state.get("show_forgot", False):
         # Forgot password flow first if toggled
         st.markdown("#### 🔐 Forgot Password")
+        if st.session_state.get("reset_success"):
+            st.success("Password has been reset successfully")
+            st.session_state["reset_success"] = False
         with st.form("forgot_form"):
             fp_email = st.text_input("Email", placeholder="user@example.com")
             get_link = st.form_submit_button("Get Reset Token")
@@ -97,8 +125,16 @@ with col1:
         st.divider()
         st.markdown("##### Reset Password (use token from message)")
         with st.form("reset_form"):
-            token = st.text_input("Token")
-            new_pw = st.text_input("New Password", type="password")
+            token = st.text_input(
+                "Token",
+                value=st.session_state.get("reset_token_prefill", ""),
+                key=f"reset_token_input_v{st.session_state['reset_form_version']}",
+            )
+            new_pw = st.text_input(
+                "New Password",
+                type="password",
+                key=f"reset_new_password_input_v{st.session_state['reset_form_version']}",
+            )
             reset_clicked = st.form_submit_button("Reset Password")
         if reset_clicked:
             # Reuse client policy
@@ -124,12 +160,32 @@ with col1:
                 else:
                     ok, data = api_post("/reset-password", {"token": token, "new_password": new_pw})
                     if ok:
-                        st.success(data.get("message", "Password has been reset."))
+                        # Show success after rerun and clear inputs safely on next cycle
+                        st.session_state["reset_success"] = True
+                        st.session_state["reset_clear_pending"] = True
+                        # Also clear token from URL so we don't auto-open forgot view
+                        try:
+                            if hasattr(st, "query_params"):
+                                st.query_params.clear()
+                            else:
+                                st.experimental_set_query_params()
+                        except Exception:
+                            pass
+                        st.rerun()
                     else:
                         st.error(data)
         # Provide a back-to-login button
         if st.button("Back to Sign in"):
             st.session_state.show_forgot = False
+            st.session_state.show_register = False
+            # Clear any token in the URL so we don't re-open this view
+            try:
+                if hasattr(st, "query_params"):
+                    st.query_params.clear()
+                else:
+                    st.experimental_set_query_params()
+            except Exception:
+                pass
             st.rerun()
 
     elif not st.session_state.show_register:
