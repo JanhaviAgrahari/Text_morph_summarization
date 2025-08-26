@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from . import models, schemas, crud
 from .database import engine, SessionLocal, Base
 from .emailer import send_password_reset_email
+from .auth import create_access_token, get_current_user
 import os
 import logging
 
@@ -41,16 +42,22 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     created = crud.create_user(db, user)
     return created
 
-@app.post("/login")
+@app.post("/login", response_model=schemas.Token)
 def login(user: schemas.UserLogin, db: Session = Depends(get_db)):
     db_user = crud.authenticate_user(db, user.email, user.password)
     if not db_user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return {"message": "Login successful", "user_id": db_user.id}
+    token = create_access_token(db_user.id)
+    return {"access_token": token, "token_type": "bearer"}
 
-@app.post("/profile/{user_id}", response_model=schemas.UserOut)
-def update_profile(user_id: int, profile: schemas.UserProfile, db: Session = Depends(get_db)):
-    db_user = crud.update_profile(db, user_id, profile)
+@app.get("/me", response_model=schemas.UserOut)
+def read_me(current_user: models.User = Depends(get_current_user)):
+    return current_user
+
+
+@app.post("/profile", response_model=schemas.UserOut)
+def update_profile(profile: schemas.UserProfile, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    db_user = crud.update_profile(db, current_user.id, profile)
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
     return db_user

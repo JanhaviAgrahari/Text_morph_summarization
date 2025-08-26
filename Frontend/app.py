@@ -5,7 +5,7 @@ import re
 API_URL = "http://127.0.0.1:8000"  # FastAPI backend
 
 
-def api_post(path: str, payload: dict, timeout: int = 5):
+def api_post(path: str, payload: dict, timeout: int = 5, token: str | None = None):
     """POST to backend with robust error handling.
 
     Returns tuple (ok: bool, data: dict|str)
@@ -14,7 +14,10 @@ def api_post(path: str, payload: dict, timeout: int = 5):
     """
     url = f"{API_URL}{path}"
     try:
-        resp = requests.post(url, json=payload, timeout=timeout)
+        headers = {"Content-Type": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        resp = requests.post(url, json=payload, timeout=timeout, headers=headers)
         # Try to parse JSON either way
         body = None
         try:
@@ -30,6 +33,35 @@ def api_post(path: str, payload: dict, timeout: int = 5):
             detail = body.get("detail") or body.get("message")
             if isinstance(detail, list):
                 # FastAPI validation errors can be a list
+                detail = "; ".join([str(d.get("msg", d)) for d in detail])
+            if detail:
+                return False, f"{resp.status_code}: {detail}"
+        return False, f"{resp.status_code}: {resp.reason or 'Request failed'}"
+    except requests.exceptions.ConnectionError:
+        return False, "Cannot connect to backend. Make sure it's running at http://127.0.0.1:8000"
+    except requests.exceptions.Timeout:
+        return False, "Backend request timed out."
+    except requests.exceptions.RequestException as e:
+        return False, f"Request error: {e}"
+
+
+def api_get(path: str, timeout: int = 5, token: str | None = None):
+    url = f"{API_URL}{path}"
+    try:
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        resp = requests.get(url, timeout=timeout, headers=headers)
+        body = None
+        try:
+            body = resp.json()
+        except Exception:
+            body = None
+        if 200 <= resp.status_code < 300:
+            return True, (body if body is not None else {})
+        if body and isinstance(body, dict):
+            detail = body.get("detail") or body.get("message")
+            if isinstance(detail, list):
                 detail = "; ".join([str(d.get("msg", d)) for d in detail])
             if detail:
                 return False, f"{resp.status_code}: {detail}"
@@ -216,7 +248,7 @@ with col1:
                 ok, data = api_post("/login", {"email": email, "password": password})
                 if ok:
                     st.success("Login successful")
-                    st.session_state["user_id"] = data.get("user_id")
+                    st.session_state["token"] = data.get("access_token")
                 else:
                     st.error(data)
 
@@ -272,9 +304,12 @@ with col1:
 
 with col2:
     st.markdown("### 👥 Profile Management")
-    if "user_id" not in st.session_state:
+    if "token" not in st.session_state or not st.session_state.get("token"):
         st.info("Please log in to update your profile.")
     else:
+        ok_me, me = api_get("/me", token=st.session_state.get("token"))
+        if ok_me and isinstance(me, dict):
+            st.caption(f"Signed in as {me.get('email')}")
         with st.form("profile_form"):
             name = st.text_input("Name", placeholder="Your name")
             age_group = st.selectbox("Age Group", ["18-25", "26-35", "36-50", "50+"])
@@ -283,8 +318,9 @@ with col2:
 
         if save_profile:
             ok, data = api_post(
-                f"/profile/{st.session_state['user_id']}",
+                "/profile",
                 {"name": name, "age_group": age_group, "language": language},
+                token=st.session_state.get("token"),
             )
             if ok:
                 st.success("Profile updated successfully")
