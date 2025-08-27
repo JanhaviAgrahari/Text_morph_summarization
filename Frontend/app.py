@@ -257,16 +257,31 @@ with tabs[4]:
     if not token:
         st.info("Please sign in to access readability analysis.")
     else:
-        # Card-like container styles
+        # Card-like container styles with colorful elements matching example
         st.markdown(
             """
             <style>
             .card {background:#0f172a14;border:1px solid #33415533;border-radius:12px;padding:16px;margin-bottom:16px}
             .upload-card{border:2px dashed #3b82f6;background:#1e293b0d}
-            .metric-card{background:#0b1221;border:1px solid #33415566;border-radius:12px;padding:14px;text-align:center}
-            .metric-value{font-size:28px;font-weight:700;margin-bottom:4px}
-            .metric-label{font-size:13px;color:#94a3b8}
-            .feature-card{background:#0f172a14;border:1px solid #33415533;border-radius:12px;padding:12px}
+            
+            /* Metric cards with color styles */
+            .metric-card{background:white;border:1px solid #e5e7eb;border-radius:8px;padding:16px;text-align:center;box-shadow:0 2px 5px rgba(0,0,0,0.1)}
+            .metric-value{font-size:32px;font-weight:700;margin-bottom:4px}
+            .metric-label{font-size:14px;color:#4b5563}
+            
+            /* Color coding for metrics */
+            .metric-green .metric-value{color:#22c55e}
+            .metric-yellow .metric-value{color:#eab308}
+            .metric-red .metric-value{color:#ef4444}
+            
+            /* Color indicators for metrics */
+            .indicator{height:6px;border-radius:3px;margin-top:8px;background:linear-gradient(to right, #22c55e, #eab308, #ef4444)}
+            
+            /* Feature card */
+            .feature-card{background:#e0f2fe;border-left:4px solid #3b82f6;border-radius:6px;padding:16px;margin-top:24px}
+            .feature-title{font-weight:600;color:#1e40af;margin-bottom:12px}
+            .feature-item{display:flex;align-items:center;margin-bottom:8px}
+            .feature-icon{color:#3b82f6;margin-right:8px;font-size:16px}
             </style>
             """,
             unsafe_allow_html=True,
@@ -337,14 +352,38 @@ with tabs[4]:
                 except Exception:
                     smog = float("nan")
 
-                # Metric cards
+                # Colorful metric cards with indicators like the example
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.markdown('<div class="metric-card"><div class="metric-value">{}</div><div class="metric-label">Flesch Reading Ease</div></div>'.format(fk_ease), unsafe_allow_html=True)
+                    # Green for high Flesch (easier readability)
+                    st.markdown(
+                        f'''<div class="metric-card metric-green">
+                            <div class="metric-value">{fk_ease}</div>
+                            <div class="metric-label">Flesch-Kincaid</div>
+                            <div class="indicator"></div>
+                        </div>''', 
+                        unsafe_allow_html=True
+                    )
                 with c2:
-                    st.markdown('<div class="metric-card"><div class="metric-value">{}</div><div class="metric-label">Gunning Fog</div></div>'.format(gunning), unsafe_allow_html=True)
+                    # Yellow for mid-range Gunning
+                    st.markdown(
+                        f'''<div class="metric-card metric-yellow">
+                            <div class="metric-value">{gunning}</div>
+                            <div class="metric-label">Gunning Fog</div>
+                            <div class="indicator"></div>
+                        </div>''', 
+                        unsafe_allow_html=True
+                    )
                 with c3:
-                    st.markdown('<div class="metric-card"><div class="metric-value">{}</div><div class="metric-label">SMOG Index</div></div>'.format(smog), unsafe_allow_html=True)
+                    # Red for SMOG (often indicates complexity)
+                    st.markdown(
+                        f'''<div class="metric-card metric-red">
+                            <div class="metric-value">{smog}</div>
+                            <div class="metric-label">SMOG Index</div>
+                            <div class="indicator"></div>
+                        </div>''', 
+                        unsafe_allow_html=True
+                    )
 
                 # Calculate readability distribution based on established score interpretations
                 # Flesch Reading Ease: 90-100 Very Easy, 80-89 Easy, 70-79 Fairly Easy, 60-69 Standard, 
@@ -397,23 +436,45 @@ with tabs[4]:
                     df = pd.DataFrame({
                         "Level": ["Beginner", "Intermediate", "Advanced"],
                         "Score": [beg, inter, adv],
+                        # Colors matching the example image: green, yellow, red
+                        "Color": ["#4ade80", "#facc15", "#f87171"]
                     })
                     chart_title = "Reading Level Distribution"
-                    chart = alt.Chart(df).mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-                        x=alt.X("Level", sort=None),
-                        y=alt.Y("Score", scale=alt.Scale(domain=[0, 100]))
+                    chart = alt.Chart(df).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6).encode(
+                        x=alt.X("Level", sort=None, title=None),
+                        y=alt.Y("Score", scale=alt.Scale(domain=[0, 100]), title="Score"),
+                        color=alt.Color("Color", scale=None, legend=None)
+                    ).configure_view(
+                        strokeWidth=0
+                    ).configure_axis(
+                        grid=True,
+                        gridColor="#e5e7eb",
+                        labelColor="#4b5563",
+                        tickColor="#e5e7eb",
+                        domainColor="#e5e7eb"
                     ).properties(height=220, title=chart_title)
                     st.altair_chart(chart, use_container_width=True)
                 except Exception:
                     pass
 
-                # Analysis features list
-                st.markdown('<div class="feature-card">', unsafe_allow_html=True)
-                st.markdown("**Analysis Features**")
-                st.markdown("- Real-time readability scoring")
-                st.markdown("- Visual complexity indicators")
-                st.markdown("- Comprehensive text metrics")
-                st.markdown('</div>', unsafe_allow_html=True)
+                # Analysis features list with icons and styling
+                st.markdown('''
+                <div class="feature-card">
+                    <div class="feature-title">Analysis Features</div>
+                    <div class="feature-item">
+                        <span class="feature-icon">⚡</span>
+                        Real-time readability scoring
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-icon">📊</span>
+                        Visual complexity indicators
+                    </div>
+                    <div class="feature-item">
+                        <span class="feature-icon">📝</span>
+                        Comprehensive text metrics
+                    </div>
+                </div>
+                ''', unsafe_allow_html=True)
 
 
 # Lightweight backend health indicator
