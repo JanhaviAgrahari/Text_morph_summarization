@@ -15,3 +15,7 @@ python-dotenv
 mysql-connector-python
 requests
 email-validator
+textstat
+PyPDF2
+python-docx
+pdfminer.six
