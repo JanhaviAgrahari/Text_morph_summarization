@@ -4,6 +4,7 @@ import re
 from io import BytesIO
 from typing import Optional
 
+# Optional third-party dependencies; each falls back gracefully if unavailable
 try:
     import textstat  # type: ignore
 except Exception:
@@ -24,6 +25,7 @@ try:
 except Exception:
     pdfminer_extract_text = None
 
+# Base URL for the FastAPI backend service
 API_URL = "http://127.0.0.1:8000"  # FastAPI backend
 
 
@@ -36,9 +38,11 @@ def api_post(path: str, payload: dict, timeout: int = 5, token: str | None = Non
     """
     url = f"{API_URL}{path}"
     try:
+    # Build headers and include bearer token if provided
         headers = {"Content-Type": "application/json"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+    # Send request and try to parse JSON response (if any)
         resp = requests.post(url, json=payload, timeout=timeout, headers=headers)
         body = None
         try:
@@ -47,6 +51,7 @@ def api_post(path: str, payload: dict, timeout: int = 5, token: str | None = Non
             body = None
         if 200 <= resp.status_code < 300:
             return True, (body if body is not None else {})
+    # Map common FastAPI error payloads into a concise message
         if body and isinstance(body, dict):
             detail = body.get("detail") or body.get("message")
             if isinstance(detail, list):
@@ -65,9 +70,11 @@ def api_post(path: str, payload: dict, timeout: int = 5, token: str | None = Non
 def api_get(path: str, timeout: int = 5, token: str | None = None):
     url = f"{API_URL}{path}"
     try:
+    # Add Authorization header when token is available
         headers = {}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+    # Perform GET and parse JSON if present
         resp = requests.get(url, timeout=timeout, headers=headers)
         body = None
         try:
@@ -76,6 +83,7 @@ def api_get(path: str, timeout: int = 5, token: str | None = None):
             body = None
         if 200 <= resp.status_code < 300:
             return True, (body if body is not None else {})
+    # Normalize error message returned by backend
         if body and isinstance(body, dict):
             detail = body.get("detail") or body.get("message")
             if isinstance(detail, list):
@@ -91,6 +99,7 @@ def api_get(path: str, timeout: int = 5, token: str | None = None):
         return False, f"Request error: {e}"
 
 
+# Configure Streamlit page metadata and layout
 st.set_page_config(page_title="Text morph advanced summarisation using AI", layout="centered")
 
 # Apply consistent app-wide styling with optimized CSS
@@ -191,6 +200,7 @@ st.markdown(
 )
 
 
+# Basic password strength checks (client-side only)
 def _valid_password(p: str) -> tuple[bool, str | None]:
     if len(p) < 8:
         return False, "Password must be at least 8 characters long."
@@ -215,6 +225,7 @@ except Exception:
     pass
 
 
+# Create the main app tabs
 tabs = st.tabs(["Sign in", "Register", "Forgot password", "Profile", "Readability"])
 
 # Sign in tab
@@ -232,6 +243,7 @@ with tabs[0]:
         sign_in = st.form_submit_button("Sign in", use_container_width=True)
     
     if sign_in:
+        # Basic client-side validation for email/password
         if not email:
             st.error("Please enter your email.")
         elif not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
@@ -239,11 +251,11 @@ with tabs[0]:
         elif not password:
             st.error("Please enter your password.")
         else:
+            # Authenticate via backend /login endpoint
             ok, data = api_post("/login", {"email": email, "password": password})
             if ok:
                 st.success("Login successful")
                 st.session_state["token"] = data.get("access_token")
-                st.balloons()
             else:
                 st.error(data)
 
@@ -263,6 +275,7 @@ with tabs[1]:
         register_clicked = st.form_submit_button("Create account", use_container_width=True)
     
     if register_clicked:
+    # Validate email and password before sending to backend
         if not reg_email:
             st.error("Please enter your email.")
         elif not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", reg_email):
@@ -274,6 +287,7 @@ with tabs[1]:
             if not ok_pw:
                 st.error(err)
             else:
+        # Create account via backend /register endpoint
                 ok, data = api_post("/register", {"email": reg_email, "password": reg_password})
                 if ok:
                     st.success("Account created. You can sign in now.")
@@ -299,6 +313,7 @@ with tabs[2]:
         if not fp_email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", fp_email):
             st.error("Please enter a valid email address.")
         else:
+            # Request password reset email via /forgot-password
             ok, data = api_post("/forgot-password", {"email": fp_email})
             if ok:
                 st.info(data.get("message", "If the email exists, a reset link has been sent."))
@@ -320,6 +335,7 @@ with tabs[2]:
             if not ok_pw:
                 st.error(err)
             else:
+                # Submit new password with token to /reset-password
                 ok, data = api_post("/reset-password", {"token": token, "new_password": new_pw})
                 if ok:
                     st.success("Password has been reset successfully.")
@@ -341,6 +357,7 @@ with tabs[3]:
     if not token:
         st.info("Please sign in to access your profile")
     else:
+    # Fetch current user profile via /me using bearer token
         ok_me, me = api_get("/me", token=token)
         if ok_me and isinstance(me, dict):
             st.markdown("""
@@ -363,6 +380,7 @@ with tabs[3]:
                 save_profile = st.form_submit_button("Save profile", use_container_width=True)
             
             if save_profile:
+                # Save profile preferences to backend
                 ok, data = api_post(
                     "/profile",
                     {"name": name, "age_group": age_group, "language": language},
@@ -398,6 +416,7 @@ with tabs[4]:
         with st.container():
             col1, col2, col3 = st.columns([1, 3, 1])
             with col2:
+                # Centralized file uploader for supported document types
                 up = st.file_uploader("Upload Document", type=["txt", "pdf", "docx"])
                 if not up:
                     st.caption("Supported formats: .txt, .pdf, .docx")
@@ -431,6 +450,7 @@ with tabs[4]:
                 return None, "Unable to parse the file."
             return None, "Unsupported file type."
 
+    # Extract raw text from the uploaded file (falls back for tricky PDFs)
         text, read_err = _extract_text(up)
 
         if up and read_err and (text is None or text == ""):
@@ -445,7 +465,7 @@ with tabs[4]:
             if textstat is None:
                 st.error("textstat is not installed. Please add 'textstat' to requirements and reinstall.")
             else:
-                # Compute metrics
+                # Compute readability metrics from extracted text
                 try:
                     fk_ease = round(float(textstat.flesch_reading_ease(text)), 1)
                 except Exception:
@@ -459,7 +479,7 @@ with tabs[4]:
                 except Exception:
                     smog = float("nan")
 
-                # Colorful metric cards with improved indicators
+                # Present key metrics as visual cards with simple indicators
                 st.markdown("<h4 style='margin:30px 0 20px;font-weight:600;color:#1e293b;'>Readability Metrics</h4>", 
                            unsafe_allow_html=True)
                 
@@ -514,7 +534,7 @@ with tabs[4]:
                 # SMOG Index: <6 Universal, 7-9 Junior High, 10-12 High School, 
                 #             13-16 College, 17+ Graduate
                 
-                # Calculate beginner score (higher for simpler text)
+                # Heuristic: higher beginner score means simpler text overall
                 beg = 0
                 if fk_ease >= 70:  # High Flesch score = easy = beginner-friendly
                     beg += min(int(fk_ease * 0.8), 80)  # Cap at 80
@@ -524,7 +544,7 @@ with tabs[4]:
                     beg += max(0, 40 - (smog * 4))
                 beg = min(100, max(10, beg))  # Min 10, max 100
                 
-                # Calculate intermediate score
+                # Heuristic: intermediate band covers mid-range scores across metrics
                 inter = 0
                 if 50 <= fk_ease < 70:  # Mid Flesch = intermediate
                     inter += 50
@@ -540,7 +560,7 @@ with tabs[4]:
                     inter += 20
                 inter = min(100, max(10, inter))  # Min 10, max 100
                 
-                # Calculate advanced score
+                # Heuristic: advanced increases when readability becomes harder
                 adv = 0
                 if fk_ease < 50:  # Low Flesch = advanced
                     adv += max(0, 70 - fk_ease)
@@ -573,7 +593,7 @@ with tabs[4]:
                         "Order": [1, 2, 3]
                     })
                     
-                    # Chart with explicit ordering
+                    # Build Altair bar chart with explicit categorical order and color mapping
                     chart = alt.Chart(df).mark_bar().encode(
                         x=alt.X("Level:N", sort=["Beginner", "Intermediate", "Advanced"]), 
                         y=alt.Y("Score:Q", scale=alt.Scale(domain=[0, 100])),
@@ -612,6 +632,7 @@ st.sidebar.subheader("System Status")
 
 # Simplified backend status indicator
 try:
+    # Ping health endpoint to indicate backend availability
     _ping = requests.get(f"{API_URL}/ping", timeout=2)
     if _ping.ok:
         st.sidebar.success("Backend: Online")
