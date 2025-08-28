@@ -40,4 +40,5 @@ except (OperationalError, ProgrammingError) as e:
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Declarative base used by SQLAlchemy models
 Base = declarative_base()

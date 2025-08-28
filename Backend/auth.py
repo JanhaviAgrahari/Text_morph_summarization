@@ -28,6 +28,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60")
 
 
 def create_access_token(subject: str | int, expires_delta: timedelta | None = None) -> str:
+    # Encode a JWT with subject and expiry; default to configured lifetime
     expire = datetime.now(timezone.utc) + (
         expires_delta if expires_delta is not None else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
@@ -40,6 +41,7 @@ def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
+    # Decode JWT and fetch the associated user; raise 401 on any failure
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",

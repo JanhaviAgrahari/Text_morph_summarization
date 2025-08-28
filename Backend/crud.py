@@ -4,15 +4,19 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta
 import secrets
 
+# Configure passlib for password hashing/verification
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def get_password_hash(password: str):
+    # Generate salted hash for persistent storage
     return pwd_context.hash(password)
 
 def verify_password(plain_password, hashed_password):
+    # Check user-provided password against stored hash
     return pwd_context.verify(plain_password, hashed_password)
 
 def create_user(db: Session, user: schemas.UserCreate):
+    # Create a new user with a hashed password
     hashed_password = get_password_hash(user.password)
     db_user = models.User(email=user.email, password=hashed_password)
     db.add(db_user)
@@ -21,12 +25,14 @@ def create_user(db: Session, user: schemas.UserCreate):
     return db_user
 
 def authenticate_user(db: Session, email: str, password: str):
+    # Look up by email and verify password
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user or not verify_password(password, user.password):
         return None
     return user
 
 def update_profile(db: Session, user_id: int, profile: schemas.UserProfile):
+    # Update user profile fields and persist
     user = db.query(models.User).filter(models.User.id == user_id).first()
     if user:
         user.name = profile.name
@@ -39,6 +45,7 @@ def update_profile(db: Session, user_id: int, profile: schemas.UserProfile):
 
 # --- Password reset helpers ---
 def create_password_reset(db: Session, email: str, minutes_valid: int = 15) -> tuple[str, models.PasswordReset | None]:
+    # Create one-time token for a user if email exists; return blank token if not
     user = db.query(models.User).filter(models.User.email == email).first()
     if not user:
         return "", None
@@ -52,6 +59,7 @@ def create_password_reset(db: Session, email: str, minutes_valid: int = 15) -> t
 
 
 def reset_password(db: Session, token: str, new_password: str) -> bool:
+    # Validate token, ensure not expired/used; set new hashed password and mark token used
     pr = db.query(models.PasswordReset).filter(models.PasswordReset.token == token).first()
     if not pr or pr.used:
         return False
