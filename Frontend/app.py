@@ -706,8 +706,61 @@ with tabs[5]:  # Tab 5 - Summarization
                         st.error(result["error"])
                     else:
                         st.success("Summary generated successfully!")
-                        st.markdown("### Generated Summary")
-                        st.write(result["summary"])
+
+                        # Prepare original text for side-by-side view
+                        original_text_display = ""
+                        if input_type == "Plain Text":
+                            original_text_display = text_input.strip()
+                        else:
+                            # Try to extract PDF text (lightweight) for display
+                            try:
+                                if pdf_file is not None and PyPDF2 is not None:
+                                    pdf_file.seek(0)
+                                    reader = PyPDF2.PdfReader(pdf_file)
+                                    pages = [p.extract_text() or "" for p in reader.pages]
+                                    original_text_display = "\n".join(pages).strip()
+                            except Exception:
+                                original_text_display = "(Unable to extract PDF text for preview)"
+
+                        summary_text_display = result["summary"].strip()
+
+                        def _word_count(t: str) -> int:
+                            return len([w for w in re.findall(r"\w+", t)]) if t else 0
+
+                        wc_orig = _word_count(original_text_display)
+                        wc_sum = _word_count(summary_text_display)
+                        compression = (1 - (wc_sum / wc_orig)) * 100 if wc_orig > 0 else 0
+
+                        col_orig, col_sum = st.columns(2)
+                        with col_orig:
+                            st.markdown("#### Original Text")
+                            st.caption(f"{wc_orig} words")
+                            st.text_area(label="Original", value=original_text_display[:15000], height=260, key="orig_view")
+                        with col_sum:
+                            st.markdown("#### Summary")
+                            st.caption(f"{wc_sum} words")
+                            st.text_area(label="Summary", value=summary_text_display, height=260, key="sum_view")
+                            # Quick metrics row
+                            metric_cols = st.columns(2)
+                            with metric_cols[0]:
+                                if wc_orig > 0:
+                                    st.markdown(f"**Compression:** {compression:.0f}%")
+                                else:
+                                    st.markdown("**Compression:** n/a")
+                            with metric_cols[1]:
+                                # Placeholder for ROUGE F1 after evaluation (updated later)
+                                st.markdown("**ROUGE F1:** _evaluate to view_")
+
+                        # Optional feature list / hint
+                        with st.container():
+                            st.markdown("<div style='margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f1f5f9'>" \
+                                        "<strong>Key Features</strong><ul style='margin-top:6px;'>" \
+                                        "<li>Multiple summary length options</li>" \
+                                        "<li>Advanced models (Pegasus, BART, FLAN-T5)</li>" \
+                                        "<li>Side-by-side comparison view</li>" \
+                                        "<li>Quality metrics (ROUGE, compression)</li>" \
+                                        "<li>Edit text areas and click Generate again to refine</li>" \
+                                        "</ul></div>", unsafe_allow_html=True)
                         st.session_state['last_summary'] = result["summary"]
                         st.session_state['last_model'] = model_choice
                         st.session_state['last_length'] = summary_length
