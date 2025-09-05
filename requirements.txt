@@ -3,6 +3,7 @@ fastapi
 uvicorn
 python-jose
 passlib[bcrypt]
+bcrypt==4.0.1  # Pinned to avoid passlib "error reading bcrypt version" warning seen with newer bcrypt
 sqlalchemy
 torch
 transformers
@@ -19,3 +20,9 @@ textstat
 PyPDF2
 python-docx
 pdfminer.six
+python-multipart
+rouge-score  # for ROUGE evaluation endpoint
+pymupdf
+altair
+pandas
+matplotlib

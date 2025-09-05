@@ -56,7 +56,7 @@ env/
 ENV/
 env.bak/
 venv.bak/
-chatbot_env/
+summary_env/
 
 # Notebook checkpoints
 .ipynb_checkpoints/

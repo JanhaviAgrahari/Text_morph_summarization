@@ -25,6 +25,16 @@ try:
 except Exception:
     pdfminer_extract_text = None
 
+# Visualization libraries (matplotlib preferred for charts)
+try:
+    import matplotlib.pyplot as plt  # type: ignore
+except Exception:
+    plt = None
+try:
+    import numpy as np  # type: ignore
+except Exception:
+    np = None
+
 # Base URL for the FastAPI backend service
 API_URL = "http://127.0.0.1:8000"  # FastAPI backend
 
@@ -226,7 +236,7 @@ except Exception:
 
 
 # Create the main app tabs
-tabs = st.tabs(["Sign in", "Register", "Forgot password", "Profile", "Readability"])
+tabs = st.tabs(["Sign in", "Register", "Forgot password", "Profile", "Readability", "Summarization"])
 
 # Sign in tab
 with tabs[0]:
@@ -571,11 +581,9 @@ with tabs[4]:
                 adv = min(100, max(10, adv))  # Min 10, max 100
 
                 try:
-                    import altair as alt
                     import pandas as pd
-                    
                     st.subheader("Reading Level Distribution")
-                    
+
                     # Simplified description based on score distribution
                     max_score = max(beg, inter, adv)
                     if max_score == beg:
@@ -585,27 +593,23 @@ with tabs[4]:
                     else:
                         st.info("This text contains advanced language patterns common in academic content.")
 
-                    df = pd.DataFrame({
-                        "Level": ["Beginner", "Intermediate", "Advanced"],
-                        "Score": [beg, inter, adv],
-                        "Color": ["#10b981", "#f59e0b", "#ef4444"],
-                        # Add order column for sorting
-                        "Order": [1, 2, 3]
-                    })
-                    
-                    # Build Altair bar chart with explicit categorical order and color mapping
-                    chart = alt.Chart(df).mark_bar().encode(
-                        x=alt.X("Level:N", sort=["Beginner", "Intermediate", "Advanced"]), 
-                        y=alt.Y("Score:Q", scale=alt.Scale(domain=[0, 100])),
-                        color=alt.Color("Color:N", scale=None, legend=None),
-                        tooltip=["Level:N", "Score:Q"]
-                    ).properties(height=220)
-                    
-                    st.altair_chart(chart, use_container_width=True)
-                    st.caption("Higher scores indicate greater prevalence of that reading level")
-                    
+                    if plt is None:
+                        st.warning("matplotlib not installed; run 'pip install matplotlib' to view distribution bar chart.")
+                    else:
+                        levels = ["Beginner", "Intermediate", "Advanced"]
+                        scores = [beg, inter, adv]
+                        colors = ["#10b981", "#f59e0b", "#ef4444"]
+                        fig, ax = plt.subplots(figsize=(5.5, 3.0))
+                        bars = ax.bar(levels, scores, color=colors)
+                        ax.set_ylim(0, 100)
+                        ax.set_ylabel("Score")
+                        ax.set_title("Reading Level Distribution")
+                        for b, val in zip(bars, scores):
+                            ax.text(b.get_x() + b.get_width()/2, val + 1, f"{val}", ha='center', va='bottom', fontsize=8)
+                        st.pyplot(fig, clear_figure=True)
+                        st.caption("Higher scores indicate greater prevalence of that reading level")
                 except Exception as e:
-                    st.error(f"Could not generate chart: {str(e)}")
+                    st.error(f"Could not generate chart: {e}")
 
                 # Simplified feature info
                 st.subheader("Document Analysis Features")
@@ -617,6 +621,150 @@ with tabs[4]:
                 with col2:
                     st.markdown("📝 **Multiple file format support**")
                     st.markdown("🔍 **Comprehensive text metrics**")
+
+
+BACKEND_URL = "http://127.0.0.1:8000"
+
+with tabs[5]:  # Tab 5 - Summarization
+    st.subheader("Summarize Text or PDF")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        input_type = st.radio("Choose input type:", ["Plain Text", "PDF File"])
+        model_choice = st.selectbox(
+            "Select Model",
+            options=["pegasus", "bart", "flan-t5"],
+            index=0
+        )
+        summary_length = st.selectbox(
+            "Summary Length",
+            options=["short", "medium", "long"],
+            index=1
+        )
+
+    with col2:
+        st.write("Instructions:")
+        st.markdown("- Paste text or upload a PDF.\n- Choose a model and summary length.\n- Click 'Generate Summary'.")
+
+    text_input = ""
+    pdf_file = None
+
+    if input_type == "Plain Text":
+        text_input = st.text_area("Paste your text here", height=200)
+    else:
+        pdf_file = st.file_uploader("Upload a PDF", type=["pdf"])
+
+    # Reference summary input for ROUGE (optional)
+    reference_input = st.text_area("Reference Summary (optional for ROUGE evaluation)", height=150, help="Paste a human-written or gold summary here to compute ROUGE metrics.")
+
+    # Initialize session state for last summary
+    if 'last_summary' not in st.session_state:
+        st.session_state['last_summary'] = None
+        st.session_state['last_model'] = None
+        st.session_state['last_length'] = None
+
+    generate_clicked = st.button("Generate Summary")
+
+    if generate_clicked:
+        if (input_type == "Plain Text" and not text_input.strip()) or (input_type == "PDF File" and not pdf_file):
+            st.error("Please provide text or upload a PDF.")
+        else:
+            with st.spinner("Generating summary..."):
+                form_data = {
+                    "model_choice": model_choice,
+                    "summary_length": summary_length,
+                    "input_type": "pdf" if input_type == "PDF File" else "text",
+                    "text_input": text_input
+                }
+
+                files = None
+                if pdf_file:
+                    files = {"pdf_file": (pdf_file.name, pdf_file, "application/pdf")}
+
+                try:
+                    response = requests.post(
+                        f"{BACKEND_URL}/summarize/",
+                        data=form_data,
+                        files=files
+                    )
+                    result = response.json()
+
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.success("Summary generated successfully!")
+                        st.markdown("### Generated Summary")
+                        st.write(result["summary"])
+                        st.session_state['last_summary'] = result["summary"]
+                        st.session_state['last_model'] = model_choice
+                        st.session_state['last_length'] = summary_length
+
+                        # Auto-evaluate if reference provided up front
+                        if reference_input.strip():
+                            with st.spinner("Evaluating ROUGE metrics..."):
+                                try:
+                                    rouge_payload = {
+                                        "reference": reference_input.strip(),
+                                        "candidate": result["summary"]
+                                    }
+                                    rouge_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=rouge_payload, timeout=120)
+                                    rouge_json = rouge_resp.json()
+                                    if 'scores' in rouge_json:
+                                        st.markdown("### ROUGE Evaluation")
+                                        scores = rouge_json['scores']
+                                        try:
+                                            import pandas as pd
+                                            rows = []
+                                            for metric_name, vals in scores.items():
+                                                rows.append({"Metric": metric_name.upper(), "Precision": vals['precision'], "Recall": vals['recall'], "F1": vals['f1']})
+                                            df = pd.DataFrame(rows)
+                                            st.dataframe(df.style.format({"Precision": "{:.4f}", "Recall": "{:.4f}", "F1": "{:.4f}"}))
+
+                                            if plt is None:
+                                                st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
+                                            else:
+                                                # Grouped precision/recall/F1 chart
+                                                fig2, ax2 = plt.subplots(figsize=(6, 3.2))
+                                                metrics_order = list(scores.keys())
+                                                x = np.arange(len(metrics_order)) if np is not None else list(range(len(metrics_order)))
+                                                width = 0.25
+                                                precisions = [scores[m]['precision'] for m in metrics_order]
+                                                recalls = [scores[m]['recall'] for m in metrics_order]
+                                                f1s = [scores[m]['f1'] for m in metrics_order]
+                                                if np is not None:
+                                                    ax2.bar(x - width, precisions, width, label='Precision', color='#3b82f6')
+                                                    ax2.bar(x, recalls, width, label='Recall', color='#10b981')
+                                                    ax2.bar(x + width, f1s, width, label='F1', color='#f59e0b')
+                                                    ax2.set_xticks(x)
+                                                    ax2.set_xticklabels([m.upper() for m in metrics_order])
+                                                else:
+                                                    # Fallback without numpy (less precise spacing)
+                                                    positions = []
+                                                    for i in range(len(metrics_order)):
+                                                        base = i * 3 * width
+                                                        positions.append(base)
+                                                        ax2.bar(base, precisions[i], width, label='Precision' if i == 0 else '', color='#3b82f6')
+                                                        ax2.bar(base + width, recalls[i], width, label='Recall' if i == 0 else '', color='#10b981')
+                                                        ax2.bar(base + 2*width, f1s[i], width, label='F1' if i == 0 else '', color='#f59e0b')
+                                                    ax2.set_xticks([p + width for p in positions])
+                                                    ax2.set_xticklabels([m.upper() for m in metrics_order])
+                                                ax2.set_ylim(0, 1)
+                                                ax2.set_ylabel('Score')
+                            
+                                                ax2.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.15))
+                                                st.pyplot(fig2, clear_figure=True)
+
+                                                st.caption(f"Reference tokens: {rouge_json.get('reference_tokens')} | Candidate tokens: {rouge_json.get('candidate_tokens')}")
+                                        except Exception as viz_e:
+                                            st.warning(f"ROUGE computed, but visualization failed: {viz_e}")
+                                    else:
+                                        st.warning("ROUGE evaluation response did not contain scores.")
+                                except Exception as er:
+                                    st.error(f"ROUGE evaluation failed: {er}")
+
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
 
 
 # Simplified sidebar with essential information

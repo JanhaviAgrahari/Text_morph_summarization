@@ -72,3 +72,21 @@ class MessageOut(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+# --- ROUGE evaluation schemas ---
+class RougeEvalRequest(BaseModel):
+    reference: str  # ground-truth / human written summary
+    candidate: str  # model generated summary
+    use_stemmer: bool = True
+    metrics: list[str] | None = None  # e.g. ["rouge1","rouge2","rougeL"]
+
+class RougeScore(BaseModel):
+    precision: float
+    recall: float
+    f1: float
+
+class RougeEvalResponse(BaseModel):
+    scores: dict[str, RougeScore]
+    reference_tokens: int
+    candidate_tokens: int
