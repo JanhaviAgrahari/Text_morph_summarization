@@ -1,226 +1,76 @@
 import streamlit as st
 import requests
 import re
-from io import BytesIO
-from typing import Optional
 import os
 import csv
 from datetime import datetime
+from io import BytesIO
+from typing import Optional, Tuple, Any
 
-# Optional third-party dependencies; each falls back gracefully if unavailable
+# --- Optional dependency imports (fail gracefully if missing) ---
 try:
-    import textstat  # type: ignore
-except Exception:
-    textstat = None  # graceful fallback
-
-try:
-    import PyPDF2  # type: ignore
-except Exception:
+    import PyPDF2  # PDF parsing
+except ImportError:  # pragma: no cover
     PyPDF2 = None
-
 try:
-    from docx import Document  # type: ignore
-except Exception:
-    Document = None
-
-try:
-    from pdfminer.high_level import extract_text as pdfminer_extract_text  # type: ignore
-except Exception:
+    from pdfminer.high_level import extract_text as pdfminer_extract_text  # Fallback PDF text extractor
+except ImportError:  # pragma: no cover
     pdfminer_extract_text = None
-
-# Visualization libraries (matplotlib preferred for charts)
 try:
-    import matplotlib.pyplot as plt  # type: ignore
-except Exception:
+    from docx import Document  # DOCX parsing
+except ImportError:  # pragma: no cover
+    Document = None
+try:
+    import textstat  # Readability metrics
+except ImportError:  # pragma: no cover
+    textstat = None
+try:
+    import matplotlib.pyplot as plt  # Charts
+except ImportError:  # pragma: no cover
     plt = None
 try:
-    import numpy as np  # type: ignore
-except Exception:
+    import numpy as np  # For grouped bar placement (optional)
+except ImportError:  # pragma: no cover
     np = None
 
-# Base URL for the FastAPI backend service
-API_URL = "http://127.0.0.1:8000"  # FastAPI backend
+# --- Constants & configuration ---
+BACKEND_URL = "http://127.0.0.1:8000"
+API_URL = BACKEND_URL  # Alias for legacy references
+ROUGE_OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rouge_score"))
+os.makedirs(ROUGE_OUTPUT_DIR, exist_ok=True)
 
-# Directory to store ROUGE score CSV exports
-ROUGE_OUTPUT_DIR = "rouge_score"
-try:
-    if not os.path.isdir(ROUGE_OUTPUT_DIR):
-        os.makedirs(ROUGE_OUTPUT_DIR, exist_ok=True)
-except Exception:
-    # Fail silently; later file write will raise a clearer error if directory truly cannot be created
-    pass
-
-
-def api_post(path: str, payload: dict, timeout: int = 5, token: str | None = None):
-    """POST to backend with robust error handling.
-
-    Returns tuple (ok: bool, data: dict|str)
-    - ok True => data is JSON body
-    - ok False => data is error string for user display
-    """
-    url = f"{API_URL}{path}"
+# --- Simple API helpers ---
+def api_post(path: str, payload: dict, token: Optional[str] = None) -> Tuple[bool, Any]:
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = f"{BACKEND_URL}{path}"
     try:
-    # Build headers and include bearer token if provided
-        headers = {"Content-Type": "application/json"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-    # Send request and try to parse JSON response (if any)
-        resp = requests.post(url, json=payload, timeout=timeout, headers=headers)
-        body = None
+        r = requests.post(url, json=payload, headers=headers, timeout=60)
+        if r.ok:
+            return True, r.json()
         try:
-            body = resp.json()
+            return False, r.json().get("detail", r.text)
         except Exception:
-            body = None
-        if 200 <= resp.status_code < 300:
-            return True, (body if body is not None else {})
-    # Map common FastAPI error payloads into a concise message
-        if body and isinstance(body, dict):
-            detail = body.get("detail") or body.get("message")
-            if isinstance(detail, list):
-                detail = "; ".join([str(d.get("msg", d)) for d in detail])
-            if detail:
-                return False, f"{resp.status_code}: {detail}"
-        return False, f"{resp.status_code}: {resp.reason or 'Request failed'}"
-    except requests.exceptions.ConnectionError:
-        return False, "Cannot connect to backend. If it is not running at http://127.0.0.1:8000"
-    except requests.exceptions.Timeout:
-        return False, "Backend request timed out."
-    except requests.exceptions.RequestException as e:
-        return False, f"Request error: {e}"
+            return False, r.text
+    except Exception as e:  # pragma: no cover
+        return False, str(e)
 
-
-def api_get(path: str, timeout: int = 5, token: str | None = None):
-    url = f"{API_URL}{path}"
+def api_get(path: str, token: Optional[str] = None) -> Tuple[bool, Any]:
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = f"{BACKEND_URL}{path}"
     try:
-    # Add Authorization header when token is available
-        headers = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-    # Perform GET and parse JSON if present
-        resp = requests.get(url, timeout=timeout, headers=headers)
-        body = None
+        r = requests.get(url, headers=headers, timeout=30)
+        if r.ok:
+            return True, r.json()
         try:
-            body = resp.json()
+            return False, r.json().get("detail", r.text)
         except Exception:
-            body = None
-        if 200 <= resp.status_code < 300:
-            return True, (body if body is not None else {})
-    # Normalize error message returned by backend
-        if body and isinstance(body, dict):
-            detail = body.get("detail") or body.get("message")
-            if isinstance(detail, list):
-                detail = "; ".join([str(d.get("msg", d)) for d in detail])
-            if detail:
-                return False, f"{resp.status_code}: {detail}"
-        return False, f"{resp.status_code}: {resp.reason or 'Request failed'}"
-    except requests.exceptions.ConnectionError:
-        return False, "Cannot connect to backend. Make sure it's running at http://127.0.0.1:8000"
-    except requests.exceptions.Timeout:
-        return False, "Backend request timed out."
-    except requests.exceptions.RequestException as e:
-        return False, f"Request error: {e}"
-
-
-# Configure Streamlit page metadata and layout
-st.set_page_config(page_title="Text morph advanced summarisation using AI", layout="centered")
-
-# Apply consistent app-wide styling with optimized CSS
-st.markdown("""
-<style>
-    /* Base styling with custom font */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    html, body, [class*="st-"] { font-family: 'Inter', sans-serif; }
-    
-    /* Header styling with gradient text */
-    h1 { 
-        color: #1e293b; font-weight: 700; font-size: 2.4rem; margin-bottom: 1rem;
-        background: linear-gradient(90deg, #1e293b, #334155);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-    }
-    h1 span.highlight { background: linear-gradient(90deg, #1d4ed8, #3b82f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-    h2, h3 { font-weight: 600; color: #1e293b; }
-    
-    /* Streamlined tabs styling */
-    .stTabs { margin-top: 1rem; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; background-color: #f8fafc; border-radius: 8px 8px 0 0; border-bottom: 1px solid #e2e8f0; }
-    .stTabs [data-baseweb="tab"] { height: 40px; background-color: #f1f5f9; border-radius: 6px 6px 0 0; font-weight: 500; }
-    .stTabs [aria-selected="true"] { background-color: #e0e7ff !important; color: #3b82f6 !important; border-bottom: 2px solid #3b82f6; }
-    
-    /* Form and button styling */
-    [data-testid="stForm"] { background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.5rem; }
-    button[kind="primary"] { background-color: #3b82f6; border-radius: 6px; font-weight: 500; }
-    button[kind="primary"]:hover { background-color: #2563eb; }
-    
-    /* Card styling */
-    .card { background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
-    
-    /* Misc improvements */
-    .stAlert { border-radius: 6px; }
-    .block-container { max-width: 1000px; padding-top: 2rem; }
-    footer { visibility: hidden; }
-    
-    /* Metrics styling (matching the image) */
-    .metric-card { background: white; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; text-align: center; }
-    .metric-value { font-size: 32px; font-weight: 700; margin-bottom: 8px; }
-    .metric-label { font-size: 14px; color: #64748b; }
-    .metric-green .metric-value { color: #10b981; }
-    .metric-yellow .metric-value { color: #f59e0b; }
-    .metric-red .metric-value { color: #ef4444; }
-    
-    /* Indicator matching the image */
-    .indicator { 
-        height: 4px; 
-        border-radius: 2px; 
-        margin: 10px 0; 
-        background: linear-gradient(to right, #10b981, #f59e0b, #ef4444);
-        position: relative; 
-    }
-    .indicator::after { 
-        content: ''; 
-        position: absolute; 
-        width: 12px; 
-        height: 12px; 
-        background: white; 
-        border: 2px solid #3b82f6; 
-        border-radius: 50%; 
-        top: -4px; 
-    }
-    .indicator.easy::after { left: 15%; } 
-    .indicator.medium::after { left: 50%; } 
-    .indicator.hard::after { left: 85%; }
-    
-    /* Upload area */
-    .upload-container { border: 2px dashed #94a3b8; border-radius: 8px; padding: 20px; text-align: center; }
-    
-    /* Feature card */
-    .feature-card { background: #f0f9ff; border-left: 4px solid #3b82f6; border-radius: 8px; padding: 16px; margin-top: 24px; }
-    .feature-title { font-weight: 600; color: #1e40af; margin-bottom: 12px; }
-    .feature-item { display: flex; align-items: center; margin-bottom: 8px; }
-</style>
-""", unsafe_allow_html=True)
-
-# App header with simplified design
-st.markdown("""
-<div style="text-align: center; margin-bottom: 2rem;">
-    <img src="https://cdn-icons-png.flaticon.com/512/3368/3368235.png" width="70" style="margin-bottom: 0.5rem;">
-    <h1>Text<span class="highlight">morph</span></h1>
-    <p style="font-size:1.1rem;color:#475569;margin-top:-0.5rem;font-weight:500;">
-        Advanced Text Summarisation Using AI
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-# Subtle style adjustments
-st.markdown(
-    """
-    <style>
-    .block-container {max-width: 760px;}
-    .stForm button[kind="primary"] {min-width: 140px;}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
+            return False, r.text
+    except Exception as e:  # pragma: no cover
+        return False, str(e)
 
 # Basic password strength checks (client-side only)
 def _valid_password(p: str) -> tuple[bool, str | None]:
@@ -635,9 +485,17 @@ with tabs[4]:
                     st.markdown("🔍 **Comprehensive text metrics**")
 
 
-BACKEND_URL = "http://127.0.0.1:8000"
-
 with tabs[5]:  # Tab 5 - Summarization
+    token = st.session_state.get("token")
+    if not token:
+        st.markdown("""
+            <div style='text-align:center;padding:50px 0;'>
+                <h3 style='color:#334155;margin-bottom:10px;'>Sign in required</h3>
+                <p style='color:#64748b;'>Please sign in to access the summarization feature.</p>
+            </div>
+        """, unsafe_allow_html=True)
+        # Early return pattern – don't render summarization UI when not authenticated
+        st.stop()
     st.subheader("Summarize Text or PDF")
 
     col1, col2 = st.columns(2)
