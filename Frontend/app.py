@@ -3,6 +3,9 @@ import requests
 import re
 from io import BytesIO
 from typing import Optional
+import os
+import csv
+from datetime import datetime
 
 # Optional third-party dependencies; each falls back gracefully if unavailable
 try:
@@ -37,6 +40,15 @@ except Exception:
 
 # Base URL for the FastAPI backend service
 API_URL = "http://127.0.0.1:8000"  # FastAPI backend
+
+# Directory to store ROUGE score CSV exports
+ROUGE_OUTPUT_DIR = "rouge_score"
+try:
+    if not os.path.isdir(ROUGE_OUTPUT_DIR):
+        os.makedirs(ROUGE_OUTPUT_DIR, exist_ok=True)
+except Exception:
+    # Fail silently; later file write will raise a clearer error if directory truly cannot be created
+    pass
 
 
 def api_post(path: str, payload: dict, timeout: int = 5, token: str | None = None):
@@ -756,6 +768,31 @@ with tabs[5]:  # Tab 5 - Summarization
                                                 st.pyplot(fig2, clear_figure=True)
 
                                                 st.caption(f"Reference tokens: {rouge_json.get('reference_tokens')} | Candidate tokens: {rouge_json.get('candidate_tokens')}")
+
+                                                # --- Auto-save ROUGE scores to CSV ---
+                                                try:
+                                                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                                    csv_filename = os.path.join(ROUGE_OUTPUT_DIR, f"rouge_scores_{ts}.csv")
+                                                    # Write a header + rows for each metric
+                                                    with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
+                                                        writer = csv.writer(f)
+                                                        writer.writerow(["metric", "precision", "recall", "f1", "reference_tokens", "candidate_tokens", "model", "summary_length"])
+                                                        ref_tok = rouge_json.get('reference_tokens')
+                                                        cand_tok = rouge_json.get('candidate_tokens')
+                                                        for metric_name, vals in scores.items():
+                                                            writer.writerow([
+                                                                metric_name,
+                                                                vals['precision'],
+                                                                vals['recall'],
+                                                                vals['f1'],
+                                                                ref_tok,
+                                                                cand_tok,
+                                                                st.session_state.get('last_model'),
+                                                                st.session_state.get('last_length')
+                                                            ])
+                                                    st.info(f"ROUGE scores saved to {csv_filename}")
+                                                except Exception as file_e:
+                                                    st.warning(f"Could not save ROUGE CSV: {file_e}")
                                         except Exception as viz_e:
                                             st.warning(f"ROUGE computed, but visualization failed: {viz_e}")
                                     else:

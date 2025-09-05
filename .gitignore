@@ -103,3 +103,7 @@ Backend/.env
 
 # Node (in case you add a frontend later)
 node_modules/
+
+# ROUGE score exports: keep directory, ignore generated CSV files
+rouge_score/*
+!rouge_score/.gitkeep
