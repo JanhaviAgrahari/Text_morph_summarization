@@ -1,44 +1,39 @@
 import os
 from pathlib import Path
-from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import OperationalError, ProgrammingError
 
-# Load environment variables from .env located next to this file
-_env_path = Path(__file__).with_name('.env')
-load_dotenv(dotenv_path=_env_path)
+# Define database directory and ensure it exists
+DB_DIR = Path(__file__).parent.parent / "database"
+DB_DIR.mkdir(exist_ok=True)
 
-# Read from env with safe defaults (useful for local dev without .env)
-MYSQL_USER = os.getenv("MYSQL_USER")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
-MYSQL_HOST = os.getenv("MYSQL_HOST")
-MYSQL_DB = os.getenv("MYSQL_DB")
+# SQLite database file path
+SQLITE_DB_FILE = DB_DIR / "text_morph.db"
 
-# URL-encode password to support special characters
-_pwd = quote_plus(MYSQL_PASSWORD or "")
-DATABASE_URL = f"mysql+mysqlconnector://{MYSQL_USER}:{_pwd}@{MYSQL_HOST}:3306/{MYSQL_DB}"
+# Create the SQLite connection string
+DATABASE_URL = f"sqlite:///{SQLITE_DB_FILE}"
 
-# Try to create an engine bound to the target database. If the database doesn't exist,
-# create it using a temporary connection to the server (no database) and retry.
-try:
-	engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-	# test connection
-	with engine.connect() as conn:
-		pass
-except (OperationalError, ProgrammingError) as e:
-	# If the database is missing, create it and retry
-	tmp_url = f"mysql+mysqlconnector://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}:3306/"
-	tmp_engine = create_engine(tmp_url)
-	with tmp_engine.connect() as conn:
-		# CREATE DATABASE IF NOT EXISTS
-		conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB}"))
-	engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+# Create the SQLAlchemy engine
+# Note: check_same_thread=False allows SQLite to be used with multiple threads
+# which is necessary for FastAPI's concurrent request handling
+engine = create_engine(
+    DATABASE_URL, 
+    connect_args={"check_same_thread": False},
+    pool_pre_ping=True
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Declarative base used by SQLAlchemy models
 Base = declarative_base()
+
+# Database dependency for route handlers
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

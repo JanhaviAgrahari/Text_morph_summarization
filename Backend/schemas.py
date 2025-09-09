@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr, field_validator
 import re
+from datetime import datetime
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -105,3 +106,28 @@ class ParaphraseRequest(BaseModel):
 class ComplexityVisualizationRequest(BaseModel):
     original_text: str
     comparison_texts: list[str]
+
+
+# --- History schemas ---
+class HistoryEntry(BaseModel):
+    id: int
+    type: str  # 'summary' or 'paraphrase'
+    original_text: str
+    result_text: str
+    model: str
+    created_at: datetime
+    parameters: str | None = None
+
+    class Config:
+        from_attributes = True
+
+class HistoryResponse(BaseModel):
+    entries: list[HistoryEntry]
+    
+class CreateHistoryEntry(BaseModel):
+    user_id: int
+    type: str  # 'summary' or 'paraphrase' 
+    original_text: str
+    result_text: str
+    model: str
+    parameters: str | None = None

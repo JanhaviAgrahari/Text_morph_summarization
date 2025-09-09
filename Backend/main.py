@@ -2,9 +2,10 @@ from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from . import models, schemas, crud
-from .database import engine, SessionLocal, Base
+from .database import engine, SessionLocal, Base, get_db
 from .emailer import send_password_reset_email
 from .auth import create_access_token, get_current_user
+import json
 import os
 import logging
 
@@ -39,14 +40,6 @@ app.add_middleware(
 def ping():
     # Lightweight health check endpoint used by Streamlit sidebar
     return {"message": "pong"}
-
-def get_db():
-    # Dependency that yields a DB session and ensures cleanup
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 @app.post("/register", response_model=schemas.UserOut)
 def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
@@ -119,7 +112,9 @@ async def summarize_endpoint(
     summary_length: str = Form("medium"),
     input_type: str = Form("text"),  # "text" or "pdf"
     text_input: str = Form(""),
-    pdf_file: UploadFile = File(None)
+    pdf_file: UploadFile = File(None),
+    user_email: str = Form(None),  # Optional user email to save in history
+    db: Session = Depends(get_db)
 ):
     """Summarize plain text or an uploaded PDF using a selected local model.
 
@@ -159,6 +154,22 @@ async def summarize_endpoint(
             raise HTTPException(status_code=400, detail="Text is too short to summarize (min ~30 characters)")
 
         summary = summarize_text(text_to_summarize, model_choice=model_choice, summary_length=summary_length)
+        
+        # Save to history if user is provided
+        if user_email:
+            user = db.query(models.User).filter(models.User.email == user_email).first()
+            if user:
+                # Create a history entry
+                history_entry = schemas.CreateHistoryEntry(
+                    user_id=user.id,
+                    type="summary",
+                    original_text=text_to_summarize,
+                    result_text=summary,
+                    model=model_choice,
+                    parameters=json.dumps({"summary_length": summary_length})
+                )
+                crud.create_history_entry(db, history_entry)
+        
         return {
             "summary": summary,
             "model": model_choice,
@@ -207,6 +218,55 @@ def evaluate_rouge(payload: _schemas.RougeEvalRequest):
     )
 
 
+# -------------------- History Endpoints --------------------
+
+@app.get("/history", response_model=schemas.HistoryResponse)
+def get_history(
+    email: str, 
+    type: str = None,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """Get user's history of summaries and paraphrases.
+    
+    Args:
+        email: User's email
+        type: Optional filter by type ('summary' or 'paraphrase')
+        limit: Maximum number of history entries to return
+    """
+    # Get the user by email
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get the history entries
+    if type:
+        entries = crud.get_user_history_by_type(db, user.id, type, limit)
+    else:
+        entries = crud.get_user_history(db, user.id, limit)
+    
+    return {"entries": entries}
+
+@app.delete("/history/{entry_id}")
+def delete_history_entry(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    email: str = None
+):
+    """Delete a specific history entry."""
+    # Get the user by email
+    user = db.query(models.User).filter(models.User.email == email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Delete the entry
+    deleted = crud.delete_history_entry(db, entry_id, user.id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="History entry not found or doesn't belong to user")
+    
+    return {"message": "History entry deleted successfully"}
+
+
 # -------------------- Visualization Endpoints --------------------
 
 @app.post("/visualize/complexity")
@@ -239,8 +299,8 @@ def visualize_complexity_endpoint(payload: _schemas.ComplexityVisualizationReque
 @app.post("/paraphrase/")
 def paraphrase_endpoint(paraphrase_request: schemas.ParaphraseRequest, db: Session = Depends(get_db)):
     """
-    Paraphrases the given text. Optionally saves to history (not implemented here) and
-    returns simple complexity metrics for original and paraphrased variants.
+    Paraphrases the given text. Saves to history if user_email is provided and
+    returns complexity metrics for original and paraphrased variants.
     """
     try:
         # Support friendly aliases (pegasus, bart, flan-t5) using summarizer MODELS mapping
@@ -263,6 +323,34 @@ def paraphrase_endpoint(paraphrase_request: schemas.ParaphraseRequest, db: Sessi
             creativity=creativity,
             length=length
         )
+        
+        # Save to history if user email is provided
+        if user_email:
+            user = db.query(models.User).filter(models.User.email == user_email).first()
+            if user:
+                # Create a history entry
+                parameters = {
+                    "creativity": creativity,
+                    "length": length
+                }
+                # Extract the first paraphrase text from result
+                first_text = ""
+                try:
+                    pr = result.get("paraphrased_results") or []
+                    if isinstance(pr, list) and pr:
+                        first_text = pr[0].get("text", "")
+                except Exception:
+                    first_text = ""
+
+                history_entry = schemas.CreateHistoryEntry(
+                    user_id=user.id,
+                    type="paraphrase",
+                    original_text=text,
+                    result_text=first_text,
+                    model=model_name,
+                    parameters=json.dumps(parameters)
+                )
+                crud.create_history_entry(db, history_entry)
         
         return result
     except ValueError as e:

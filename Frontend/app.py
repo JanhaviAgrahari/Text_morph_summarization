@@ -98,7 +98,7 @@ except Exception:
 
 
 # Create the main app tabs
-tabs = st.tabs(["Sign in", "Register", "Forgot password", "Profile", "Readability", "Summarization", "Paraphrasing"])
+tabs = st.tabs(["Sign in", "Register", "Forgot password", "Profile", "Readability", "Summarization", "Paraphrasing", "History"])
 
 # Sign in tab
 with tabs[0]:
@@ -127,7 +127,19 @@ with tabs[0]:
             ok, data = api_post("/login", {"email": email, "password": password})
             if ok:
                 st.success("Login successful")
+                # Persist auth context
                 st.session_state["token"] = data.get("access_token")
+                st.session_state["logged_in"] = True
+                st.session_state["user_email"] = email
+                # Optionally cache /me
+                try:
+                    ok_me, me = api_get("/me", token=st.session_state["token"])  # type: ignore[index]
+                    if ok_me and isinstance(me, dict):
+                        st.session_state["me"] = me
+                except Exception:
+                    pass
+                # Rerun to propagate session state into other tabs immediately
+                st.rerun()
             else:
                 st.error(data)
 
@@ -541,12 +553,16 @@ with tabs[5]:  # Tab 5 - Summarization
             st.error("Please provide text or upload a PDF.")
         else:
             with st.spinner("Generating summary..."):
+                # Include user email if available for history tracking
                 form_data = {
                     "model_choice": model_choice,
                     "summary_length": summary_length,
                     "input_type": "pdf" if input_type == "PDF File" else "text",
                     "text_input": text_input
                 }
+                # Add user email for history if present in session
+                if st.session_state.get("user_email"):
+                    form_data["user_email"] = st.session_state["user_email"]
 
                 files = None
                 if pdf_file:
@@ -921,3 +937,107 @@ Textmorph provides advanced text analysis and summarization using AI algorithms:
 - Text summarization
 - Document processing
 """)
+
+# -------------------- History Tab --------------------
+
+with tabs[7]:  # Tab 7 - History
+    token = st.session_state.get("token")
+    if not token:
+        st.warning("Please sign in to view your history.")
+    else:
+        st.title("📚 Your Transformation History")
+        st.write("Here is a record of your recent paraphrasing activities.")
+
+        # Add filter options
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            filter_type = st.selectbox("Filter by type:", ["All", "Summary", "Paraphrase"], key="history_filter")
+        with col2:
+            limit = st.number_input("Limit results:", min_value=5, max_value=100, value=20, step=5, key="history_limit")
+        with col3:
+            refresh = st.button("Refresh", key="refresh_history")
+
+        # Convert filter for API
+        filter_param = None if filter_type == "All" else filter_type.lower()
+        
+        # Fetch history from API
+        # Resolve email: prefer session_state.user_email, fallback to /me
+        email = st.session_state.get("user_email") or (st.session_state.get("me") or {}).get("email")
+        if not email:
+            # Try one more time to fetch /me
+            ok_me, me = api_get("/me", token=token)
+            if ok_me and isinstance(me, dict):
+                st.session_state["me"] = me
+                email = me.get("email")
+        if not email:
+            st.info("Couldn't resolve your email from session; please sign out and sign in again.")
+            st.stop()
+        
+        # Build the API URL
+        if filter_param:
+            history_url = f"/history?email={email}&type={filter_param}&limit={limit}"
+        else:
+            history_url = f"/history?email={email}&limit={limit}"
+
+        success, history_data = api_get(history_url, token=token)
+
+        if not success:
+            st.error(f"Failed to load history: {history_data}")
+        else:
+            # Display history entries
+            if "entries" in history_data and history_data["entries"]:
+                for entry in history_data["entries"]:
+                    entry_type = entry["type"].capitalize()
+                    # Parse timestamp flexibly (with or without microseconds / timezone)
+                    created_raw = entry.get("created_at") or ""
+                    try:
+                        created_date = datetime.strptime(created_raw, "%Y-%m-%dT%H:%M:%S.%f")
+                    except Exception:
+                        try:
+                            created_date = datetime.strptime(created_raw, "%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            created_date = datetime.utcnow()
+                    formatted_date = created_date.strftime("%B %d, %Y at %H:%M %p")
+                    
+                    # Create an expandable section for each entry
+                    with st.expander(f"{entry_type} on {formatted_date}", expanded=False):
+                        st.markdown("### Original Text")
+                        st.text_area("Original", entry["original_text"], height=150, disabled=True, key=f"orig_{entry['id']}")
+                        
+                        st.markdown("### Result")
+                        st.text_area("Result", entry.get("result_text", ""), height=150, disabled=True, key=f"result_{entry['id']}")
+                        
+                        # Additional info
+                        col1, col2, col3 = st.columns([1, 1, 1])
+                        with col1:
+                            st.info(f"Model: {entry['model']}")
+                        with col2:
+                            # Format the parameters nicely if possible
+                            try:
+                                import json
+                                raw_params = entry.get('parameters')
+                                params = json.loads(raw_params) if isinstance(raw_params, str) else (raw_params or {})
+                                param_text = ", ".join([f"{k}: {v}" for k, v in params.items()]) if params else "Default parameters"
+                            except Exception:
+                                param_text = entry.get('parameters') or "Default parameters"
+                            st.info(f"Parameters: {param_text}")
+                        with col3:
+                            # Add a delete button
+                            if st.button("Delete", key=f"delete_{entry['id']}"):
+                                delete_url = f"/history/{entry['id']}?email={email}"
+                                response = requests.delete(f"{BACKEND_URL}{delete_url}")
+                                success = response.ok
+                                try:
+                                    delete_result = response.json()
+                                except:
+                                    delete_result = response.text
+                                if success:
+                                    st.success("Entry deleted successfully!")
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed to delete entry: {delete_result}")
+            else:
+                st.info("No history entries found. Try creating some summaries or paraphrases first!")
+                
+        st.divider()
+        st.caption("Your transformation history is stored securely and is only visible to you.")

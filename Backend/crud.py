@@ -72,3 +72,51 @@ def reset_password(db: Session, token: str, new_password: str) -> bool:
     pr.used = True
     db.commit()
     return True
+
+
+# --- History operations ---
+def create_history_entry(db: Session, entry: schemas.CreateHistoryEntry):
+    """Create a new history entry for a summary or paraphrase."""
+    db_entry = models.History(
+        user_id=entry.user_id,
+        type=entry.type,
+        original_text=entry.original_text,
+        result_text=entry.result_text,
+        model=entry.model,
+        parameters=entry.parameters
+    )
+    db.add(db_entry)
+    db.commit()
+    db.refresh(db_entry)
+    return db_entry
+
+def get_user_history(db: Session, user_id: int, limit: int = 100):
+    """Get the history entries for a specific user, newest first."""
+    return db.query(models.History)\
+        .filter(models.History.user_id == user_id)\
+        .order_by(models.History.created_at.desc())\
+        .limit(limit)\
+        .all()
+
+def get_history_entry(db: Session, entry_id: int):
+    """Get a specific history entry by ID."""
+    return db.query(models.History).filter(models.History.id == entry_id).first()
+
+def get_user_history_by_type(db: Session, user_id: int, type: str, limit: int = 100):
+    """Get history entries for a user filtered by type (summary/paraphrase)."""
+    return db.query(models.History)\
+        .filter(models.History.user_id == user_id, models.History.type == type)\
+        .order_by(models.History.created_at.desc())\
+        .limit(limit)\
+        .all()
+
+def delete_history_entry(db: Session, entry_id: int, user_id: int) -> bool:
+    """Delete a history entry, ensuring it belongs to the correct user."""
+    db_entry = db.query(models.History)\
+        .filter(models.History.id == entry_id, models.History.user_id == user_id)\
+        .first()
+    if not db_entry:
+        return False
+    db.delete(db_entry)
+    db.commit()
+    return True
