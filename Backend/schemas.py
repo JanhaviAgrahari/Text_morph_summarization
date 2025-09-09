@@ -90,3 +90,18 @@ class RougeEvalResponse(BaseModel):
     scores: dict[str, RougeScore]
     reference_tokens: int
     candidate_tokens: int
+
+
+# --- Paraphrasing schemas ---
+class ParaphraseRequest(BaseModel):
+    model_name: str
+    text: str
+    creativity: float = 0.3
+    length: str = "medium"  # short | medium | long
+    # Optional user email; if provided, backend may store history
+    user_email: str | None = None
+    
+# --- Visualization schemas ---
+class ComplexityVisualizationRequest(BaseModel):
+    original_text: str
+    comparison_texts: list[str]

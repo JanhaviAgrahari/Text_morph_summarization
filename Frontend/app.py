@@ -40,13 +40,13 @@ ROUGE_OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 os.makedirs(ROUGE_OUTPUT_DIR, exist_ok=True)
 
 # --- Simple API helpers ---
-def api_post(path: str, payload: dict, token: Optional[str] = None) -> Tuple[bool, Any]:
+def api_post(path: str, payload: dict, token: Optional[str] = None, timeout: int = 60) -> Tuple[bool, Any]:
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     url = f"{BACKEND_URL}{path}"
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=60)
+        r = requests.post(url, json=payload, headers=headers, timeout=timeout)
         if r.ok:
             return True, r.json()
         try:
@@ -98,7 +98,7 @@ except Exception:
 
 
 # Create the main app tabs
-tabs = st.tabs(["Sign in", "Register", "Forgot password", "Profile", "Readability", "Summarization"])
+tabs = st.tabs(["Sign in", "Register", "Forgot password", "Profile", "Readability", "Summarization", "Paraphrasing"])
 
 # Sign in tab
 with tabs[0]:
@@ -577,6 +577,24 @@ with tabs[5]:  # Tab 5 - Summarization
                                     reader = PyPDF2.PdfReader(pdf_file)
                                     pages = [p.extract_text() or "" for p in reader.pages]
                                     original_text_display = "\n".join(pages).strip()
+                                    # --- Normalize PDF text so it shows as readable paragraphs ---
+                                    try:
+                                        # Keep paragraph breaks (double newlines) but collapse single newlines to spaces
+                                        t = original_text_display.replace("\r\n", "\n")
+                                        # Join hyphenated line breaks like "exam-\nple" -> "example"
+                                        t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", t)
+                                        # Reduce 3+ newlines to 2 (standard paragraph break)
+                                        t = re.sub(r"\n{3,}", "\n\n", t)
+                                        # Replace remaining single newlines with a space (preserve double newlines)
+                                        t = re.sub(r"(?<!\n)\n(?!\n)", " ", t)
+                                        # Normalize extra spaces
+                                        t = re.sub(r"[ \t]{2,}", " ", t)
+                                        # Remove spaces before punctuation
+                                        t = re.sub(r" +([.,;:!?])", r"\1", t)
+                                        original_text_display = t.strip()
+                                    except Exception:
+                                        # If normalization fails for any reason, fall back to raw extracted text
+                                        pass
                             except Exception:
                                 original_text_display = "(Unable to extract PDF text for preview)"
 
@@ -714,6 +732,164 @@ with tabs[5]:  # Tab 5 - Summarization
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
 
+
+# New Paraphrasing tab
+with tabs[6]:  # Tab 6 - Paraphrasing
+    token = st.session_state.get("token")
+    if not token:
+        st.markdown(
+            """
+            <div style='text-align:center;padding:50px 0;'>
+                <h3 style='color:#334155;margin-bottom:10px;'>Sign in required</h3>
+                <p style='color:#64748b;'>Please sign in to access the paraphrasing feature.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.stop()
+
+    st.subheader("Paraphrase Text or PDF")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        p_input_type = st.radio("Choose input type:", ["Plain Text", "PDF File"], key="para_input_type")
+        # Let users type any HF model name but prefill with a good default
+        p_model = st.selectbox(
+            "Select Model",
+            options=[
+                # Friendly aliases (resolved on backend)
+                "pegasus",
+                "bart",
+                "flan-t5",
+            ],
+            index=0,
+            help="Choose a friendly alias.",
+        )
+        p_length = st.selectbox("Target Length", ["short", "medium", "long"], index=1)
+        p_creativity = st.slider("Creativity", 0.0, 1.0, 0.3, 0.05,
+                                 help="Higher values increase randomness (temperature/top-p).")
+    with col2:
+        st.write("Instructions:")
+        st.markdown("- Paste text or upload a PDF.\n- Choose model, target length, and creativity.\n- Click 'Paraphrase'.")
+
+    p_text_input = ""
+    p_pdf_file = None
+    if p_input_type == "Plain Text":
+        p_text_input = st.text_area("Paste your text here", height=200, key="para_text")
+    else:
+        p_pdf_file = st.file_uploader("Upload a PDF", type=["pdf"], key="para_pdf")
+
+    paraphrase_clicked = st.button("Paraphrase")
+
+    if paraphrase_clicked:
+        if (p_input_type == "Plain Text" and not p_text_input.strip()) or (p_input_type == "PDF File" and not p_pdf_file):
+            st.error("Please provide text or upload a PDF.")
+        else:
+            # Build request payload
+            text_for_backend = p_text_input.strip()
+            original_text_display = text_for_backend
+
+            if p_pdf_file is not None:
+                # Extract basic text for preview and backend; reuse PyPDF2 fast path
+                try:
+                    if PyPDF2 is not None:
+                        p_pdf_file.seek(0)
+                        reader = PyPDF2.PdfReader(p_pdf_file)
+                        pages = [p.extract_text() or "" for p in reader.pages]
+                        extracted = "\n".join(pages).strip()
+                        # Normalize like summarization
+                        try:
+                            t = extracted.replace("\r\n", "\n")
+                            t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", t)
+                            t = re.sub(r"\n{3,}", "\n\n", t)
+                            t = re.sub(r"(?<!\n)\n(?!\n)", " ", t)
+                            t = re.sub(r"[ \t]{2,}", " ", t)
+                            t = re.sub(r" +([.,;:!?])", r"\1", t)
+                            extracted = t.strip()
+                        except Exception:
+                            pass
+                        original_text_display = extracted
+                        text_for_backend = extracted
+                    else:
+                        original_text_display = "(PyPDF2 not available to extract PDF text)"
+                except Exception:
+                    original_text_display = "(Unable to extract PDF text for preview)"
+
+            payload = {
+                "model_name": p_model,
+                "text": text_for_backend,
+                "creativity": float(p_creativity),
+                "length": p_length,
+                "user_email": st.session_state.get("user_email") or st.session_state.get("me", {}).get("email"),
+            }
+
+            with st.spinner("Generating paraphrases... (first run may take a few minutes while the model loads)"):
+                ok, data = api_post("/paraphrase/", payload, token=token, timeout=600)
+                if not ok:
+                    st.error(data)
+                else:
+                    # Render original and outputs
+                    st.success("Paraphrases generated successfully!")
+                    results = data.get("paraphrased_results", [])
+                    original_analysis = data.get("original_text_analysis")
+                    visualizations = data.get("visualizations", {})
+
+                    col_o, col_r = st.columns([1, 1])
+                    with col_o:
+                        st.markdown("#### Original Text")
+                        st.text_area("Original", original_text_display[:15000], height=240, key="para_orig")
+                        if original_analysis:
+                            st.caption("Original complexity:")
+                            try:
+                                st.json(original_analysis)
+                            except Exception:
+                                st.write(original_analysis)
+                    with col_r:
+                        st.markdown("#### Paraphrased Versions")
+                        if not results:
+                            st.info("No paraphrases returned.")
+                        else:
+                            for i, item in enumerate(results, 1):
+                                st.markdown(f"**Option {i}**")
+                                st.text_area(
+                                    label=f"Paraphrase {i}",
+                                    value=item.get("text", ""),
+                                    height=120,
+                                    key=f"para_out_{i}",
+                                )
+                                comp = item.get("complexity")
+                                if comp:
+                                    with st.expander("Complexity details"):
+                                        try:
+                                            st.json(comp)
+                                        except Exception:
+                                            st.write(comp)
+                    
+                    # Display Text Complexity Analysis Charts
+                    if visualizations:
+                        st.markdown("### Text Complexity Analysis")
+                        
+                        # Check if we have charts to display
+                        if "breakdown" in visualizations and "profile" in visualizations:
+                            viz_col1, viz_col2 = st.columns([1, 1])
+                            
+                            with viz_col1:
+                                st.markdown("#### Complexity Breakdown")
+                                st.image(f"data:image/png;base64,{visualizations['breakdown']}")
+                            
+                            with viz_col2:
+                                st.markdown("#### Complexity Profile")
+                                st.image(f"data:image/png;base64,{visualizations['profile']}")
+                                
+                            st.info("""
+                            **Understanding the Charts:**
+                            - **Complexity Breakdown**: Shows the distribution of text complexity levels across original and paraphrased versions
+                            - **Complexity Profile**: Displays how each version compares across beginner, intermediate and advanced reading levels
+                            """)
+                        elif "error" in visualizations:
+                            st.warning(f"Could not generate visualization charts: {visualizations['error']}")
+                        else:
+                            st.info("No visualization data available.")
 
 # Simplified sidebar with essential information
 st.sidebar.markdown("""

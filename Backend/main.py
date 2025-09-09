@@ -8,10 +8,12 @@ from .auth import create_access_token, get_current_user
 import os
 import logging
 
-# Local summarization helpers
+# Local summarization and paraphrasing helpers
 from .summarizer import summarize_text, MODELS
 from .pdf_utils import extract_text_from_pdf
+from .parahrase import paraphrase_text, analyze_text_complexity
 from . import schemas as _schemas
+from . import schemas as schemas
 
 try:
     from rouge_score import rouge_scorer
@@ -203,3 +205,74 @@ def evaluate_rouge(payload: _schemas.RougeEvalRequest):
         reference_tokens=len(ref.split()),
         candidate_tokens=len(cand.split())
     )
+
+
+# -------------------- Visualization Endpoints --------------------
+
+@app.post("/visualize/complexity")
+def visualize_complexity_endpoint(payload: _schemas.ComplexityVisualizationRequest):
+    """Generate complexity charts for comparing text samples.
+    
+    Accepts a list of texts and returns base64-encoded visualization charts.
+    """
+    try:
+        from .visualizations import generate_complexity_charts
+        
+        # Analyze each text
+        original_metrics = analyze_text_complexity(payload.original_text)
+        paraphrased_metrics = []
+        
+        for text in payload.comparison_texts:
+            paraphrased_metrics.append(analyze_text_complexity(text))
+            
+        # Generate visualization
+        visualizations = generate_complexity_charts(original_metrics, paraphrased_metrics)
+        return visualizations
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Visualization failed")
+        raise HTTPException(status_code=500, detail=f"Failed to generate visualization: {e}")
+
+
+# -------------------- Paraphrasing Endpoint --------------------
+
+@app.post("/paraphrase")
+@app.post("/paraphrase/")
+def paraphrase_endpoint(paraphrase_request: schemas.ParaphraseRequest, db: Session = Depends(get_db)):
+    """
+    Paraphrases the given text. Optionally saves to history (not implemented here) and
+    returns simple complexity metrics for original and paraphrased variants.
+    """
+    try:
+        # Support friendly aliases (pegasus, bart, flan-t5) using summarizer MODELS mapping
+        requested_name = paraphrase_request.model_name or ""
+        key = requested_name.lower()
+        model_name = MODELS.get(key, requested_name)
+        
+        text = (paraphrase_request.text or "").strip()
+        if not text:
+            raise HTTPException(status_code=422, detail="text must be non-empty")
+            
+        creativity = float(paraphrase_request.creativity or 0.3)
+        length = (paraphrase_request.length or "medium").lower()
+        user_email = paraphrase_request.user_email
+
+        # Call the imported paraphrase_text function
+        result = paraphrase_text(
+            text=text,
+            model_name=model_name,
+            creativity=creativity,
+            length=length
+        )
+        
+        return result
+    except ValueError as e:
+        # Convert ValueErrors from parahrase.py to appropriate HTTP errors
+        if "transformers not available" in str(e):
+            raise HTTPException(status_code=503, detail="transformers not available on server")
+        elif "Failed to load model" in str(e):
+            raise HTTPException(status_code=500, detail=str(e))
+        else:
+            raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Paraphrase failed")
+        raise HTTPException(status_code=500, detail=f"Failed to generate paraphrase: {e}")

@@ -107,3 +107,7 @@ node_modules/
 # ROUGE score exports: keep directory, ignore generated CSV files
 rouge_score/*
 !rouge_score/.gitkeep
+
+# Uploaded PDFs: keep directory, ignore uploaded files
+Backend/uploaded_pdfs/*
+!Backend/uploaded_pdfs/.gitkeep
