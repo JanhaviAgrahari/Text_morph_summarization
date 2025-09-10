@@ -795,6 +795,24 @@ with tabs[6]:  # Tab 6 - Paraphrasing
     else:
         p_pdf_file = st.file_uploader("Upload a PDF", type=["pdf"], key="para_pdf")
 
+    # ---------------- Session State Initialization for Paraphrasing ----------------
+    if 'paraphrase_results' not in st.session_state:
+        st.session_state['paraphrase_results'] = None
+    if 'paraphrase_original_text' not in st.session_state:
+        st.session_state['paraphrase_original_text'] = ""
+    if 'paraphrase_text_for_backend' not in st.session_state:
+        st.session_state['paraphrase_text_for_backend'] = ""
+    if 'paraphrase_model' not in st.session_state:
+        st.session_state['paraphrase_model'] = None
+    if 'paraphrase_length' not in st.session_state:
+        st.session_state['paraphrase_length'] = None
+    if 'paraphrase_creativity' not in st.session_state:
+        st.session_state['paraphrase_creativity'] = None
+    if 'paraphrase_original_analysis' not in st.session_state:
+        st.session_state['paraphrase_original_analysis'] = None
+    if 'paraphrase_visualizations' not in st.session_state:
+        st.session_state['paraphrase_visualizations'] = None
+
     paraphrase_clicked = st.button("Paraphrase")
 
     if paraphrase_clicked:
@@ -806,14 +824,12 @@ with tabs[6]:  # Tab 6 - Paraphrasing
             original_text_display = text_for_backend
 
             if p_pdf_file is not None:
-                # Extract basic text for preview and backend; reuse PyPDF2 fast path
                 try:
                     if PyPDF2 is not None:
                         p_pdf_file.seek(0)
                         reader = PyPDF2.PdfReader(p_pdf_file)
                         pages = [p.extract_text() or "" for p in reader.pages]
                         extracted = "\n".join(pages).strip()
-                        # Normalize like summarization
                         try:
                             t = extracted.replace("\r\n", "\n")
                             t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", t)
@@ -844,68 +860,181 @@ with tabs[6]:  # Tab 6 - Paraphrasing
                 if not ok:
                     st.error(data)
                 else:
-                    # Render original and outputs
                     st.success("Paraphrases generated successfully!")
-                    results = data.get("paraphrased_results", [])
-                    original_analysis = data.get("original_text_analysis")
-                    visualizations = data.get("visualizations", {})
+                    # Persist results in session state for later ROUGE evaluation reruns
+                    st.session_state['paraphrase_results'] = data.get("paraphrased_results", [])
+                    st.session_state['paraphrase_original_analysis'] = data.get("original_text_analysis")
+                    st.session_state['paraphrase_visualizations'] = data.get("visualizations", {})
+                    st.session_state['paraphrase_original_text'] = original_text_display
+                    st.session_state['paraphrase_text_for_backend'] = text_for_backend
+                    st.session_state['paraphrase_model'] = p_model
+                    st.session_state['paraphrase_length'] = p_length
+                    st.session_state['paraphrase_creativity'] = float(p_creativity)
 
-                    col_o, col_r = st.columns([1, 1])
-                    with col_o:
-                        st.markdown("#### Original Text")
-                        st.text_area("Original", original_text_display[:15000], height=240, key="para_orig")
-                        if original_analysis:
-                            st.caption("Original complexity:")
+    # ---------------- Display Stored Paraphrase Results (if any) ----------------
+    if st.session_state['paraphrase_results']:
+        results = st.session_state['paraphrase_results']
+        original_text_display = st.session_state['paraphrase_original_text']
+        original_analysis = st.session_state['paraphrase_original_analysis']
+        visualizations = st.session_state['paraphrase_visualizations']
+        text_for_backend = st.session_state['paraphrase_text_for_backend']
+        p_model = st.session_state['paraphrase_model']
+        p_length = st.session_state['paraphrase_length']
+        p_creativity = st.session_state['paraphrase_creativity']
+
+        col_o, col_r = st.columns([1, 1])
+        with col_o:
+            st.markdown("#### Original Text")
+            st.text_area("Original", original_text_display[:15000], height=240, key="para_orig_display")
+            if original_analysis:
+                st.caption("Original complexity:")
+                try:
+                    st.json(original_analysis)
+                except Exception:
+                    st.write(original_analysis)
+        with col_r:
+            st.markdown("#### Paraphrased Versions")
+            for i, item in enumerate(results, 1):
+                st.markdown(f"**Option {i}**")
+                st.text_area(
+                    label=f"Paraphrase {i}",
+                    value=item.get("text", ""),
+                    height=120,
+                    key=f"para_out_display_{i}",
+                )
+                comp = item.get("complexity")
+                if comp:
+                    with st.expander("Complexity details", expanded=False):
+                        try:
+                            st.json(comp)
+                        except Exception:
+                            st.write(comp)
+
+        # ---- Complexity Visualization ----
+        if visualizations:
+            st.markdown("### Text Complexity Analysis")
+            if "breakdown" in visualizations and "profile" in visualizations:
+                viz_col1, viz_col2 = st.columns([1, 1])
+                with viz_col1:
+                    st.markdown("#### Complexity Breakdown")
+                    st.image(f"data:image/png;base64,{visualizations['breakdown']}")
+                with viz_col2:
+                    st.markdown("#### Complexity Profile")
+                    st.image(f"data:image/png;base64,{visualizations['profile']}")
+                st.info("""**Understanding the Charts:**\n- **Complexity Breakdown**: Distribution of text complexity levels\n- **Complexity Profile**: Comparison across reading levels""")
+            elif "error" in visualizations:
+                st.warning(f"Could not generate visualization charts: {visualizations['error']}")
+            else:
+                st.info("No visualization data available.")
+
+        # ---- ROUGE Evaluation Section ----
+        st.markdown("### Semantic Similarity (ROUGE Scores)")
+        st.info("Evaluate how semantically similar your paraphrases are to the original text or a reference paraphrase.")
+
+        # Initialize ROUGE session state if missing
+        for k, default in [
+            ('rouge_reference', ''),
+            ('rouge_metrics', ["rouge1", "rouge2", "rougeL"]),
+            ('use_stemming', True),
+            ('rouge_eval_results', None)
+        ]:
+            if k not in st.session_state:
+                st.session_state[k] = default
+
+        with st.expander("ROUGE Evaluation Options", expanded=False):
+            ref_col1, ref_col2 = st.columns([2, 1])
+            with ref_col1:
+                ref_val = st.text_area(
+                    "Reference Paraphrase (Optional)",
+                    st.session_state['rouge_reference'],
+                    height=100,
+                    help="Provide a gold-standard paraphrase to compare against the generated ones.",
+                    key="ref_paraphrase_input2"
+                )
+                st.session_state['rouge_reference'] = ref_val
+            with ref_col2:
+                st.markdown("ROUGE Metrics")
+                rouge_metrics = []
+                colm1, colm2 = st.columns([1, 1])
+                with colm1:
+                    if st.checkbox("rouge1", value="rouge1" in st.session_state['rouge_metrics'], key="rouge1_check2"):
+                        rouge_metrics.append("rouge1")
+                    if st.checkbox("rouge2", value="rouge2" in st.session_state['rouge_metrics'], key="rouge2_check2"):
+                        rouge_metrics.append("rouge2")
+                    if st.checkbox("rougeL", value="rougeL" in st.session_state['rouge_metrics'], key="rougeL_check2"):
+                        rouge_metrics.append("rougeL")
+                st.session_state['rouge_metrics'] = rouge_metrics
+                use_stemmer_val = st.checkbox("Use stemming", value=st.session_state['use_stemming'], key="use_stemming_checkbox2")
+                st.session_state['use_stemming'] = use_stemmer_val
+
+        button_col1, button_col2, button_col3 = st.columns([1, 1, 1])
+        with button_col1:
+            evaluate_clicked = st.button("Evaluate ROUGE Scores", key="evaluate_rouge_button2")
+
+        if evaluate_clicked:
+            with st.spinner("Computing ROUGE scores..."):
+                eval_payload = {
+                    "model_name": p_model,
+                    "text": text_for_backend,
+                    "creativity": float(p_creativity),
+                    "length": p_length,
+                    "evaluate_rouge": True,
+                    "rouge_metrics": st.session_state['rouge_metrics'],
+                    "use_stemmer": st.session_state['use_stemming']
+                }
+                if st.session_state['rouge_reference'].strip():
+                    eval_payload['reference_paraphrase'] = st.session_state['rouge_reference'].strip()
+                ok_eval, rouge_data = api_post("/paraphrase/", eval_payload, token=token, timeout=300)
+                if not ok_eval:
+                    st.error(f"ROUGE evaluation failed: {rouge_data}")
+                else:
+                    st.session_state['rouge_eval_results'] = rouge_data
+                    # If paraphrased_results returned, refresh session paraphrases (some models may regenerate)
+                    if rouge_data.get('paraphrased_results'):
+                        st.session_state['paraphrase_results'] = rouge_data.get('paraphrased_results')
+
+        if st.session_state['rouge_eval_results'] is not None:
+            rouge_data = st.session_state['rouge_eval_results']
+            rouge_eval = rouge_data.get("rouge_evaluation", {})
+            if rouge_eval.get("available") is False:
+                st.warning(f"ROUGE evaluation not available: {rouge_eval.get('reason', 'rouge-score library not installed')}")
+            else:
+                rouge_results = rouge_eval.get("results", [])
+                if rouge_results:
+                    if "visualizations" in rouge_eval and "rouge_chart" in rouge_eval["visualizations"]:
+                        st.image(f"data:image/png;base64,{rouge_eval['visualizations']['rouge_chart']}")
+                    with st.expander("Detailed ROUGE Scores", expanded=False):
+                        for i, result in enumerate(rouge_results):
+                            st.markdown(f"#### Option {i+1}")
+                            st.markdown("**vs Original Text:**")
+                            vs_orig = result.get("vs_original", {})
+                            orig_scores = vs_orig.get("scores", {})
                             try:
-                                st.json(original_analysis)
+                                import pandas as pd
+                                rows = [{"Metric": m.upper(), "Precision": v.get('precision',0), "Recall": v.get('recall',0), "F1": v.get('f1',0)} for m, v in orig_scores.items()]
+                                if rows:
+                                    df = pd.DataFrame(rows)
+                                    st.dataframe(df.style.format({"Precision":"{:.4f}","Recall":"{:.4f}","F1":"{:.4f}"}))
+                                else:
+                                    st.info("No scores available")
                             except Exception:
-                                st.write(original_analysis)
-                    with col_r:
-                        st.markdown("#### Paraphrased Versions")
-                        if not results:
-                            st.info("No paraphrases returned.")
-                        else:
-                            for i, item in enumerate(results, 1):
-                                st.markdown(f"**Option {i}**")
-                                st.text_area(
-                                    label=f"Paraphrase {i}",
-                                    value=item.get("text", ""),
-                                    height=120,
-                                    key=f"para_out_{i}",
-                                )
-                                comp = item.get("complexity")
-                                if comp:
-                                    with st.expander("Complexity details"):
-                                        try:
-                                            st.json(comp)
-                                        except Exception:
-                                            st.write(comp)
-                    
-                    # Display Text Complexity Analysis Charts
-                    if visualizations:
-                        st.markdown("### Text Complexity Analysis")
-                        
-                        # Check if we have charts to display
-                        if "breakdown" in visualizations and "profile" in visualizations:
-                            viz_col1, viz_col2 = st.columns([1, 1])
-                            
-                            with viz_col1:
-                                st.markdown("#### Complexity Breakdown")
-                                st.image(f"data:image/png;base64,{visualizations['breakdown']}")
-                            
-                            with viz_col2:
-                                st.markdown("#### Complexity Profile")
-                                st.image(f"data:image/png;base64,{visualizations['profile']}")
-                                
-                            st.info("""
-                            **Understanding the Charts:**
-                            - **Complexity Breakdown**: Shows the distribution of text complexity levels across original and paraphrased versions
-                            - **Complexity Profile**: Displays how each version compares across beginner, intermediate and advanced reading levels
-                            """)
-                        elif "error" in visualizations:
-                            st.warning(f"Could not generate visualization charts: {visualizations['error']}")
-                        else:
-                            st.info("No visualization data available.")
+                                st.json(orig_scores)
+                            vs_ref = result.get("vs_reference")
+                            if vs_ref:
+                                st.markdown("**vs Reference Paraphrase:**")
+                                ref_scores = vs_ref.get("scores", {})
+                                try:
+                                    rows = [{"Metric": m.upper(), "Precision": v.get('precision',0), "Recall": v.get('recall',0), "F1": v.get('f1',0)} for m, v in ref_scores.items()]
+                                    if rows:
+                                        df = pd.DataFrame(rows)
+                                        st.dataframe(df.style.format({"Precision":"{:.4f}","Recall":"{:.4f}","F1":"{:.4f}"}))
+                                    else:
+                                        st.info("No scores available")
+                                except Exception:
+                                    st.json(ref_scores)
+                            st.markdown("---")
+                else:
+                    st.warning("No ROUGE results returned from the backend.")
 
 # Simplified sidebar with essential information
 st.sidebar.markdown("""

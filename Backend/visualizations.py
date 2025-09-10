@@ -44,6 +44,104 @@ def categorize_complexity(score: float, metric: str = "flesch_reading_ease") -> 
         # Default categorization
         return "Intermediate"
 
+def generate_rouge_chart(rouge_results: List[Dict[str, Any]], 
+                    metric_names: List[str] = None) -> Dict[str, str]:
+    """
+    Generate visualization chart comparing ROUGE scores of paraphrased texts.
+    
+    Args:
+        rouge_results: List of ROUGE results for each paraphrased version
+        metric_names: List of ROUGE metric names to visualize
+        
+    Returns:
+        Dictionary with base64 encoded PNG image for ROUGE scores
+    """
+    if plt is None or pd is None or np is None:
+        return {"error": "Visualization libraries not available"}
+    
+    if not metric_names:
+        metric_names = ["rouge1", "rouge2", "rougeL"]
+    
+    # Extract ROUGE scores
+    data = []
+    for i, result in enumerate(rouge_results):
+        option_name = f"Option {i+1}"
+        
+        # Get scores vs original or reference
+        vs_data = result.get("vs_original", {})
+        if result.get("vs_reference") is not None:
+            # Prioritize reference if available
+            vs_data = result.get("vs_reference", {})
+            
+        scores = vs_data.get("scores", {})
+        for metric in metric_names:
+            if metric in scores:
+                # Use F1 score (most common ROUGE metric)
+                f1_score = scores[metric].get("f1", 0)
+                data.append({
+                    "option": option_name,
+                    "metric": metric.upper(),
+                    "value": f1_score
+                })
+    
+    if not data:
+        return {"error": "No valid ROUGE data available"}
+    
+    df = pd.DataFrame(data)
+    
+    # Generate ROUGE comparison chart
+    rouge_img = io.BytesIO()
+    fig, ax = plt.subplots(figsize=(10, 6), dpi=100)
+    fig.patch.set_facecolor('#1E1E1E')  # Dark background
+    ax.set_facecolor('#1E1E1E')
+    
+    # Transform data for grouped bar chart
+    pivot_df = df.pivot(index="metric", columns="option", values="value").reset_index()
+    
+    # Set metric as index for plotting
+    pivot_df = pivot_df.set_index("metric")
+    
+    # Create color palette
+    option_colors = {
+        "Option 1": "#9BD0F5",  # Light blue
+        "Option 2": "#1F77B4",  # Blue
+        "Option 3": "#FFA5A5"   # Light red
+    }
+    
+    # Create a list of colors matching columns
+    colors = [option_colors.get(col, f"C{i}") for i, col in enumerate(pivot_df.columns)]
+    
+    # Plot the bar chart
+    pivot_df.plot(kind="bar", ax=ax, color=colors, width=0.7, 
+                 edgecolor='black', linewidth=0.5)
+    
+    # Customize the chart
+    ax.set_title("ROUGE Score Comparison", color='white', fontsize=14, pad=20)
+    ax.set_xlabel("Metric", color='white', fontsize=12)
+    ax.set_ylabel("F1-Score (Higher is Better)", color='white', fontsize=12)
+    ax.tick_params(axis='x', colors='white')
+    ax.tick_params(axis='y', colors='white')
+    
+    # Add a legend
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(handles, labels, loc="upper right", title="Option", frameon=False,
+             title_fontsize=12, fontsize=10, labelcolor='white')
+    plt.setp(ax.get_legend().get_title(), color='white')
+    
+    # Remove grid and spines
+    ax.grid(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    
+    plt.tight_layout()
+    fig.savefig(rouge_img, format='png', bbox_inches='tight')
+    rouge_img.seek(0)
+    
+    # Convert image to base64
+    rouge_base64 = base64.b64encode(rouge_img.read()).decode('utf-8')
+    
+    return {'rouge_chart': rouge_base64}
+
 def generate_complexity_charts(original_metrics: Dict[str, float], 
                               paraphrased_metrics_list: List[Dict[str, float]]) -> Dict[str, str]:
     """

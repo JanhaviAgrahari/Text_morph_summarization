@@ -324,6 +324,86 @@ def paraphrase_endpoint(paraphrase_request: schemas.ParaphraseRequest, db: Sessi
             length=length
         )
         
+        # Optional ROUGE evaluation
+        if paraphrase_request.evaluate_rouge:
+            try:
+                if rouge_scorer is None:
+                    result["rouge_evaluation"] = {
+                        "available": False,
+                        "reason": "rouge-score library not installed"
+                    }
+                else:
+                    metrics = paraphrase_request.rouge_metrics or ["rouge1", "rouge2", "rougeL"]
+                    scorer = rouge_scorer.RougeScorer(metrics, use_stemmer=paraphrase_request.use_stemmer)
+                    
+                    # Get reference paraphrase if provided, otherwise use original text as reference
+                    ref_paraphrase = paraphrase_request.reference_paraphrase
+                    has_ref_paraphrase = ref_paraphrase and ref_paraphrase.strip()
+                    
+                    paraphrase_scores = []
+                    for item in result.get("paraphrased_results", []):
+                        candidate = (item.get("text") or "").strip()
+                        if not candidate:
+                            paraphrase_scores.append({
+                                "vs_original": {"scores": {}, "reference_tokens": len(text.split()), "candidate_tokens": 0},
+                                "vs_reference": None if has_ref_paraphrase else {}
+                            })
+                            continue
+                            
+                        # ROUGE score against original text
+                        score_dict_orig = scorer.score(text, candidate)
+                        formatted_orig = {}
+                        for k, v in score_dict_orig.items():
+                            formatted_orig[k] = {
+                                "precision": round(v.precision, 4),
+                                "recall": round(v.recall, 4),
+                                "f1": round(v.fmeasure, 4)
+                            }
+                        
+                        # Optional ROUGE against reference paraphrase
+                        vs_reference = None
+                        if has_ref_paraphrase:
+                            score_dict_ref = scorer.score(ref_paraphrase.strip(), candidate)
+                            formatted_ref = {}
+                            for k, v in score_dict_ref.items():
+                                formatted_ref[k] = {
+                                    "precision": round(v.precision, 4),
+                                    "recall": round(v.recall, 4),
+                                    "f1": round(v.fmeasure, 4)
+                                }
+                            vs_reference = {
+                                "scores": formatted_ref,
+                                "reference_tokens": len(ref_paraphrase.strip().split()),
+                                "candidate_tokens": len(candidate.split())
+                            }
+                            
+                        paraphrase_scores.append({
+                            "vs_original": {
+                                "scores": formatted_orig,
+                                "reference_tokens": len(text.split()),
+                                "candidate_tokens": len(candidate.split())
+                            },
+                            "vs_reference": vs_reference
+                        })
+                        
+                    # Add visualization of ROUGE scores if visualization module is available
+                    rouge_visualizations = {}
+                    try:
+                        from .visualizations import generate_rouge_chart
+                        rouge_visualizations = generate_rouge_chart(paraphrase_scores, metrics)
+                    except Exception as viz_exc:
+                        logging.getLogger("uvicorn.error").warning(f"ROUGE visualization failed: {viz_exc}")
+                    
+                    result["rouge_evaluation"] = {
+                        "available": True,
+                        "metric_names": metrics,
+                        "results": paraphrase_scores,
+                        "visualizations": rouge_visualizations
+                    }
+            except Exception as rouge_exc:
+                logging.getLogger("uvicorn.error").warning(f"ROUGE evaluation failed: {rouge_exc}")
+                result["rouge_evaluation"] = {"available": False, "reason": str(rouge_exc)}
+        
         # Save to history if user email is provided
         if user_email:
             user = db.query(models.User).filter(models.User.email == user_email).first()

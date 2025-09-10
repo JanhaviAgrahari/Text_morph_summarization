@@ -101,6 +101,12 @@ class ParaphraseRequest(BaseModel):
     length: str = "medium"  # short | medium | long
     # Optional user email; if provided, backend may store history
     user_email: str | None = None
+    # ROUGE evaluation options
+    evaluate_rouge: bool = False
+    rouge_metrics: list[str] | None = None  # e.g. ["rouge1","rouge2","rougeL"]
+    use_stemmer: bool = True
+    # Optional reference (gold standard) paraphrase to evaluate against
+    reference_paraphrase: str | None = None
     
 # --- Visualization schemas ---
 class ComplexityVisualizationRequest(BaseModel):
