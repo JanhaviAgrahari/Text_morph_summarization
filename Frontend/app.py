@@ -3,6 +3,7 @@ import requests
 import re
 import os
 import csv
+import json
 from datetime import datetime
 from io import BytesIO
 from typing import Optional, Tuple, Any
@@ -38,6 +39,80 @@ BACKEND_URL = "http://127.0.0.1:8000"
 API_URL = BACKEND_URL  # Alias for legacy references
 ROUGE_OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rouge_score"))
 os.makedirs(ROUGE_OUTPUT_DIR, exist_ok=True)
+
+# --- Page configuration & global styling (UI enhancement) ---
+if "_page_config_set" not in st.session_state:
+        st.set_page_config(
+                page_title="TextMorph – AI Text Analytics",
+                page_icon="📚",
+                layout="wide",
+                initial_sidebar_state="expanded",
+        )
+        st.session_state["_page_config_set"] = True
+
+# Simple light/dark toggle (client side simulation)
+theme_choice = st.sidebar.radio("Theme", ["Light", "Dark"], index=0, horizontal=True)
+dark = theme_choice == "Dark"
+
+color_block = f"""
+:root {{
+    --bg-panel: {'#111827' if dark else '#ffffff'};
+    --bg-alt: {'#1f2937' if dark else '#f8fafc'};
+    --border-color: {'#374151' if dark else '#e2e8f0'};
+    --text-color: {'#f1f5f9' if dark else '#1e293b'};
+    --text-muted: {'#94a3b8' if dark else '#64748b'};
+    --accent: #6366f1;
+    --accent-grad-start: #6366f1;
+    --accent-grad-end: #8b5cf6;
+    --danger: #ef4444;
+    --warn: #f59e0b;
+    --success: #10b981;
+}}
+"""
+
+body_bg = '#0f172a' if dark else '#f1f5f9'
+
+base_css = """
+<style>
+html, body, [class*="css"]  { font-family: 'Inter', 'Segoe UI', sans-serif; }
+BLOCK_COLOR_VARS
+.block-container { padding-top: 1.2rem; padding-bottom: 2.5rem; }
+.tm-header { background: linear-gradient(135deg,var(--accent-grad-start),var(--accent-grad-end)); padding: 1.8rem 2rem; border-radius: 18px; color: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.18); margin-bottom: 1.2rem; position: relative; overflow: hidden; }
+.tm-header:before { content: ""; position:absolute; inset:0; background: radial-gradient(circle at 25% 15%,rgba(255,255,255,.35),transparent 60%); }
+.tm-header h1 { font-size: 2.2rem; line-height:1.15; margin:0 0 .4rem; font-weight:700; }
+.tm-header p { margin:0; font-size:0.95rem; opacity:.9; font-weight:500; }
+.tm-card { background: var(--bg-panel); border:1px solid var(--border-color); padding:1.2rem 1.15rem; border-radius:14px; box-shadow:0 2px 6px rgba(0,0,0,.06); transition:.18s; }
+.tm-card:hover { box-shadow:0 4px 14px rgba(0,0,0,.10); }
+.metric-card { background: linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; padding:1rem 0.9rem; border-radius:14px; position:relative; overflow:hidden; min-height:140px; }
+.metric-green { background: linear-gradient(135deg,#10b981,#059669); }
+.metric-yellow { background: linear-gradient(135deg,#f59e0b,#d97706); }
+.metric-red { background: linear-gradient(135deg,#ef4444,#b91c1c); }
+.metric-value { font-size:2.3rem; font-weight:700; letter-spacing:-1px; }
+.metric-label { font-size:.85rem; text-transform:uppercase; opacity:.85; letter-spacing:.5px; }
+div[data-baseweb="tab-list"] button { font-weight:600; }
+textarea { font-family: 'JetBrains Mono','Consolas',monospace; font-size:0.85rem; line-height:1.35; }
+.tm-footer { margin-top:2.5rem; padding:1.4rem 1rem; text-align:center; font-size:.75rem; color:var(--text-muted); border-top:1px solid var(--border-color); }
+body { background: BODY_BG; color: var(--text-color); }
+.stMarkdown, .stText, .stRadio, .stSelectbox, .stMultiSelect, .stSlider, .stButton, label, p, span, h1,h2,h3,h4,h5,h6 { color: var(--text-color)!important; }
+section[data-testid="stSidebar"] > div { background: var(--bg-panel); }
+section[data-testid="stSidebar"] * { color: var(--text-color)!important; }
+hr { border-color: var(--border-color); }
+</style>
+"""
+
+css = base_css.replace("BLOCK_COLOR_VARS", color_block).replace("BODY_BG", body_bg)
+st.markdown(css, unsafe_allow_html=True)
+
+# Header (sticky visual identity)
+st.markdown(
+        """
+<div class='tm-header'>
+    <h1>📚 TextMorph</h1>
+    <p>AI-powered readability, summarization & paraphrasing toolkit</p>
+</div>
+""",
+        unsafe_allow_html=True,
+)
 
 # --- Simple API helpers ---
 def api_post(path: str, payload: dict, token: Optional[str] = None, timeout: int = 60) -> Tuple[bool, Any]:
@@ -97,8 +172,17 @@ except Exception:
     pass
 
 
-# Create the main app tabs
-tabs = st.tabs(["Sign in", "Register", "Forgot password", "Profile", "Readability", "Summarization", "Paraphrasing", "History"])
+# Create the main app tabs with icons (UI enhancement)
+tabs = st.tabs([
+    "🔐 Sign in",
+    "🆕 Register",
+    "🔄 Reset",
+    "👤 Profile",
+    "📊 Readability",
+    "📝 Summarization",
+    "✏️ Paraphrasing",
+    "📚 History",
+])
 
 # Sign in tab
 with tabs[0]:
@@ -1168,5 +1252,15 @@ with tabs[7]:  # Tab 7 - History
             else:
                 st.info("No history entries found. Try creating some summaries or paraphrases first!")
                 
-        st.divider()
-        st.caption("Your transformation history is stored securely and is only visible to you.")
+    st.divider()
+    st.caption("Your transformation history is stored securely and is only visible to you.")
+
+# Global footer
+st.markdown(
+        """
+<div class='tm-footer'>
+    <strong>TextMorph</strong> • Built with Streamlit & FastAPI • © 2025
+</div>
+""",
+        unsafe_allow_html=True,
+)
