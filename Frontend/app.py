@@ -185,6 +185,7 @@ tabs = st.tabs([
     "�📚 History",
     "📚 Dataset Eval",
     "✏️ Fine-tuned Paraphrasing",
+    "📚 Paraphrase Dataset Eval",
 ])
 
 # Sign in tab
@@ -2380,6 +2381,242 @@ with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
                                 st.warning(f"Failed to calculate additional metrics: {metrics_err}")
                 except Exception as e:
                     st.error(f"Failed to generate paraphrases: {e}")
+
+## -------------------- Paraphrase Dataset Evaluation tab --------------------
+with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
+    token = st.session_state.get("token")
+    if not token:
+        st.markdown(
+            """
+            <div style='text-align:center;padding:50px 0;'>
+                <h3 style='color:#334155;margin-bottom:10px;'>Sign in required</h3>
+                <p style='color:#64748b;'>Please sign in to access paraphrase dataset evaluation.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.stop()
+
+    st.markdown("""
+        <div style="text-align:center;margin-bottom:20px">
+            <img src="https://cdn-icons-png.flaticon.com/512/4471/4471606.png" width="60">
+            <h3 style="font-weight:600;color:#334155">Evaluate Fine-tuned Paraphraser on Dataset</h3>
+            <p style="color:#64748b;font-size:14px;">Use a built-in CSV (<code>train.csv</code>, <code>validation.csv</code>, <code>test.csv</code>) from the <code>paraphrase dataset/</code> folder or upload your own. We auto-detect columns like <code>text</code>/<code>input_text</code> and <code>reference</code>/<code>target_text</code> (case-insensitive). We'll generate paraphrases using your fine-tuned T5 model and compute BLEU-1..4, Perplexity, and Readability deltas.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Source selection similar to summarization dataset eval
+    src_para = st.radio("Data source", ["Built-in dataset", "Upload CSV"], horizontal=True, key="ftp_ds_source")
+
+    selected_df = None
+    if src_para == "Built-in dataset":
+        ds_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "paraphrase dataset"))
+        options = []
+        path_map = {}
+        for name in ["train.csv", "validation.csv", "test.csv"]:
+            p = os.path.join(ds_dir, name)
+            if os.path.isfile(p):
+                options.append(name)
+                path_map[name] = p
+        if not options:
+            st.warning("No built-in dataset files found in 'paraphrase dataset/'. Switch to Upload CSV.")
+        else:
+            choice = st.selectbox("Choose file", options, key="ftp_ds_choose_builtin")
+            if choice:
+                import pandas as pd
+                try:
+                    selected_df = pd.read_csv(path_map[choice])
+                except Exception as e:
+                    st.error(f"Failed to read CSV: {e}")
+    else:
+        ds_file = st.file_uploader("Upload dataset CSV (typical columns: input_text,target_text or text,reference)", type=["csv"], key="ftp_ds_eval")
+        if ds_file is not None:
+            import pandas as pd
+            try:
+                selected_df = pd.read_csv(ds_file)
+            except Exception as e:
+                st.error(f"Failed to read CSV: {e}")
+
+    if selected_df is not None:
+        df = selected_df
+        # Validate and map columns (case-insensitive)
+        lower_cols = {c.lower(): c for c in df.columns}
+        text_candidates = ["text", "input_text", "source", "article"]
+        ref_candidates = ["reference", "target_text", "target", "paraphrase", "highlights"]
+        text_col = next((lower_cols[c] for c in text_candidates if c in lower_cols), None)
+        ref_col = next((lower_cols[c] for c in ref_candidates if c in lower_cols), None)
+        if not text_col or not ref_col:
+            st.error("CSV must contain text and reference columns (e.g., input_text/target_text or text/reference).")
+            st.stop()
+        df = df[[text_col, ref_col]].rename(columns={text_col: "text", ref_col: "reference"})
+
+        # Row range selection
+        total_rows = len(df)
+        c1, c2 = st.columns(2)
+        with c1:
+            start_row = st.number_input("Start row", min_value=1, max_value=max(1, total_rows), value=1, step=1)
+        with c2:
+            default_end = min(total_rows, int(start_row) + 19)
+            end_row = st.number_input("End row (inclusive)", min_value=int(start_row), max_value=max(1, total_rows), value=default_end, step=1)
+        st.caption("Tip: Indices are 1-based and inclusive. Example: 1–100 evaluates the first 100 rows.")
+
+        s_idx = max(0, int(start_row) - 1)
+        e_idx = min(total_rows, int(end_row))
+        if s_idx >= e_idx:
+            st.error("Start row must be less than or equal to End row.")
+            st.stop()
+        df = df.iloc[s_idx:e_idx].copy()
+
+        # Decoding/complexity options reused from the fine-tuned tab
+        st.subheader("Paraphrasing Settings")
+        colA, colB, colC = st.columns(3)
+        with colA:
+            complexity_ds = st.selectbox("Complexity", ["Simple", "Medium", "Advanced"], index=0, key="ftp_ds_complexity")
+        with colB:
+            strategy_ds = st.selectbox("Decoding", ["Auto (by Complexity)", "Beam search", "Sampling"], index=0, key="ftp_ds_strategy")
+        with colC:
+            max_len_ds = st.slider("Max length", 32, 128, 64, 4, key="ftp_ds_maxlen")
+
+        # Reuse the preset logic
+        def _preset(level: str) -> dict:
+            if level == "Simple":
+                return {"do_sample": False, "num_beams": 5, "temperature": 1.0, "top_p": None, "top_k": None, "repetition_penalty": 1.1, "length_penalty": 0.9, "instruction": "in simple language."}
+            elif level == "Medium":
+                return {"do_sample": True, "num_beams": 1, "temperature": 1.0, "top_p": 0.9, "top_k": 50, "repetition_penalty": 1.0, "length_penalty": 1.0, "instruction": "clear and natural."}
+            else:
+                return {"do_sample": True, "num_beams": 1, "temperature": 1.2, "top_p": 0.95, "top_k": 100, "repetition_penalty": 0.9, "length_penalty": 1.2, "instruction": "use advanced vocabulary and complex syntax."}
+
+        params_ds = _preset(complexity_ds)
+        if strategy_ds == "Beam search":
+            params_ds["num_beams"] = st.slider("Beams", 2, 8, int(params_ds.get("num_beams", 5)), key="ftp_ds_beams")
+            params_ds["do_sample"] = False
+            params_ds["temperature"] = 1.0
+        elif strategy_ds == "Sampling":
+            params_ds["do_sample"] = True
+            params_ds["num_beams"] = 1
+            params_ds["temperature"] = st.slider("Temperature", 0.7, 1.5, float(params_ds.get("temperature", 1.0)), 0.05, key="ftp_ds_temp")
+
+        st.info(f"Loaded {len(df)} samples (rows {int(start_row)}–{int(end_row)}). Click 'Run Paraphrase Evaluation' to start.")
+        run_ds = st.button("Run Paraphrase Evaluation", type="primary")
+
+        if run_ds:
+            import pandas as pd
+            rows_out = []
+            prog = st.progress(0)
+            for i, (idx, row) in enumerate(df.iterrows(), start=1):
+                original = str(row["text"]) if pd.notna(row["text"]) else ""
+                reference = str(row["reference"]) if pd.notna(row["reference"]) else ""
+                if not original or not reference:
+                    prog.progress(min(i / len(df), 1.0))
+                    continue
+                try:
+                    # Generate paraphrase using the local fine-tuned model
+                    outs = _generate_paraphrases(
+                        original,
+                        num_return_sequences=1,
+                        max_length=int(max_len_ds),
+                        num_beams=int(params_ds.get("num_beams", 5)),
+                        temperature=float(params_ds.get("temperature", 1.0)),
+                        do_sample=bool(params_ds.get("do_sample", False)),
+                        top_p=params_ds.get("top_p"),
+                        top_k=params_ds.get("top_k"),
+                        repetition_penalty=params_ds.get("repetition_penalty"),
+                        length_penalty=params_ds.get("length_penalty"),
+                        instruction=params_ds.get("instruction"),
+                    )
+                    gen = outs[0] if outs else ""
+
+                    # Metrics via backend
+                    metrics_payload = {
+                        "reference": reference,
+                        "candidate": gen,
+                        "original_text": original,
+                    }
+                    mresp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
+                    mjson = mresp.json()
+
+                    def _get(d, path, default=None):
+                        cur = d
+                        try:
+                            for p in path:
+                                cur = cur[p]
+                            return cur
+                        except Exception:
+                            return default
+
+                    rows_out.append({
+                        "index": idx,
+                        "text": original,
+                        "generated": gen,
+                        "reference": reference,
+                        # BLEU
+                        "bleu_1": _get(mjson, ["bleu", "bleu_1"], float("nan")),
+                        "bleu_2": _get(mjson, ["bleu", "bleu_2"], float("nan")),
+                        "bleu_3": _get(mjson, ["bleu", "bleu_3"], float("nan")),
+                        "bleu_4": _get(mjson, ["bleu", "bleu_4"], float("nan")),
+                        "bleu": _get(mjson, ["bleu", "bleu"], float("nan")),
+                        # Perplexities
+                        "ppl_candidate": _get(mjson, ["perplexity_candidate", "perplexity"], _get(mjson, ["perplexity", "perplexity"], float("nan"))),
+                        "ppl_reference": _get(mjson, ["perplexity_reference", "perplexity"], float("nan")),
+                        # Readability deltas (candidate vs reference)
+                        "delta_flesch_reading_ease": _get(mjson, ["readability_ref_candidate", "delta", "flesch_reading_ease"], float("nan")),
+                        "delta_flesch_kincaid": _get(mjson, ["readability_ref_candidate", "delta", "flesch_kincaid_grade"], float("nan")),
+                        "delta_gunning_fog": _get(mjson, ["readability_ref_candidate", "delta", "gunning_fog"], float("nan")),
+                        "delta_smog_index": _get(mjson, ["readability_ref_candidate", "delta", "smog_index"], float("nan")),
+                    })
+                except Exception as e:
+                    st.warning(f"Row {idx} failed: {e}")
+                finally:
+                    prog.progress(min(i / len(df), 1.0))
+
+            if rows_out:
+                import pandas as pd
+                rdf = pd.DataFrame(rows_out)
+                st.success("Paraphrase evaluation complete.")
+
+                st.markdown("### Sample Results")
+                sample_n = min(5, len(rdf))
+                for i in range(sample_n):
+                    r = rdf.iloc[i]
+                    st.markdown(f"#### Sample #{int(r['index'])}")
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.markdown("**Original**")
+                        st.write(r["text"])
+                    with c2:
+                        st.markdown("**Paraphrase**")
+                        st.write(r["generated"])
+                    with c3:
+                        st.markdown("**Reference**")
+                        st.write(r["reference"])
+                    m1, m2, m3 = st.columns(3)
+                    with m1:
+                        st.metric("BLEU-1", f"{r['bleu_1']:.4f}" if pd.notna(r['bleu_1']) else "-")
+                        st.metric("BLEU-4", f"{r['bleu_4']:.4f}" if pd.notna(r['bleu_4']) else "-")
+                    with m2:
+                        st.metric("PPL (gen)", f"{r['ppl_candidate']:.2f}" if pd.notna(r['ppl_candidate']) else "-")
+                        st.metric("PPL (ref)", f"{r['ppl_reference']:.2f}" if pd.notna(r['ppl_reference']) else "-")
+                    with m3:
+                        st.metric("Δ Flesch Ease (gen-ref)", f"{r['delta_flesch_reading_ease']:+.2f}" if pd.notna(r['delta_flesch_reading_ease']) else "-")
+                        st.metric("Δ SMOG (gen-ref)", f"{r['delta_smog_index']:+.2f}" if pd.notna(r['delta_smog_index']) else "-")
+                    st.divider()
+
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                out_csv = rdf.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="Download Results CSV",
+                    data=out_csv,
+                    file_name=f"paraphrase_eval_results_{ts}.csv",
+                    mime="text/csv",
+                )
+
+                st.markdown("### Aggregates")
+                agg = rdf[[
+                    "bleu_1","bleu_2","bleu_3","bleu_4","bleu",
+                    "ppl_candidate","ppl_reference",
+                    "delta_flesch_reading_ease","delta_flesch_kincaid","delta_gunning_fog","delta_smog_index"
+                ]].mean(numeric_only=True)
+                st.dataframe(agg.to_frame("mean").round(4))
 
 # Global footer
 st.markdown(

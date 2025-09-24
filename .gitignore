@@ -119,9 +119,16 @@ saved_paraphrasing_model/*
 fine_tuned_t5_summarizer/*
 !fine_tuned_t5_summarizer/.gitkeep
 
+fine_tuned_bart_summarizer/*
+!fine_tuned_bart_summarizer/.gitkeep
+
 summarization_dataset/*
 !summarization_dataset/.gitkeep
 
 # Root-level uploaded PDFs
 uploaded_pdfs/*
 !uploaded_pdfs/.gitkeep
+
+# Paraphrase dataset (space in folder name is intentional)
+paraphrase dataset/*
+!paraphrase dataset/.gitkeep
