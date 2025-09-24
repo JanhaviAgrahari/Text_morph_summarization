@@ -184,6 +184,7 @@ tabs = st.tabs([
     "� Fine-tuned Summarization",
     "�📚 History",
     "📚 Dataset Eval",
+    "✏️ Fine-tuned Paraphrasing",
 ])
 
 # Sign in tab
@@ -1918,6 +1919,467 @@ with tabs[8]:  # Tab 8 - History
                 
     st.divider()
     st.caption("Your transformation history is stored securely and is only visible to you.")
+
+# -------------------- Fine-tuned Paraphrasing (Local Model) --------------------
+
+with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
+    token = st.session_state.get("token")
+    if not token:
+        st.markdown(
+            """
+            <div style='text-align:center;padding:50px 0;'>
+                <h3 style='color:#334155;margin-bottom:10px;'>Sign in required</h3>
+                <p style='color:#64748b;'>Please sign in to access the fine-tuned paraphrasing feature.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.stop()
+
+    st.subheader("Paraphrase with Fine-tuned T5 (Local Files)")
+
+    # Resolve the saved model directory relative to this file
+    MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "saved_paraphrasing_model"))
+
+    if not os.path.isdir(MODEL_DIR):
+        st.error(
+            f"Could not find the saved paraphrasing model directory at '{MODEL_DIR}'. "
+            "Please ensure the folder exists and contains the tokenizer/model files."
+        )
+        st.stop()
+
+    @st.cache_resource(show_spinner=False)
+    def _load_finetuned_paraphraser(model_path: str):
+        """Load T5-small paraphrasing model and tokenizer from local folder.
+
+        Returns (tokenizer, model, device_str).
+        """
+        try:
+            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        except Exception as e:
+            raise RuntimeError(
+                "transformers library is required. Add 'transformers' to requirements.txt and install."
+            ) from e
+
+        # Choose device if torch is available
+        device = "cpu"
+        try:
+            import torch  # type: ignore
+            device = "cuda" if hasattr(torch, "cuda") and torch.cuda.is_available() else "cpu"
+        except Exception:
+            pass
+
+        tok = AutoTokenizer.from_pretrained(model_path)
+        model = AutoModelForSeq2SeqLM.from_pretrained(model_path)
+
+        try:
+            import torch  # type: ignore
+            model = model.to(device)
+        except Exception:
+            # If torch missing, generation will still run on CPU-only environments in many cases
+            device = "cpu"
+
+        return tok, model, device
+
+    def _extract_pdf_text(file) -> str:
+        txt = ""
+        try:
+            if file is not None and PyPDF2 is not None:
+                file.seek(0)
+                reader = PyPDF2.PdfReader(file)
+                pages = [p.extract_text() or "" for p in reader.pages]
+                txt = "\n".join(pages).strip()
+                # Normalize formatting a bit
+                try:
+                    t = txt.replace("\r\n", "\n")
+                    t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", t)
+                    t = re.sub(r"\n{3,}", "\n\n", t)
+                    t = re.sub(r"(?<!\n)\n(?!\n)", " ", t)
+                    t = re.sub(r"[ \t]{2,}", " ", t)
+                    t = re.sub(r" +([.,;:!?])", r"\1", t)
+                    txt = t.strip()
+                except Exception:
+                    pass
+        except Exception:
+            txt = ""
+        return txt
+
+    def _generate_paraphrases(
+        text: str,
+        num_return_sequences: int = 1,
+        max_length: int = 64,
+        num_beams: int = 5,
+        temperature: float = 1.0,
+        do_sample: bool = False,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        repetition_penalty: float | None = None,
+        length_penalty: float | None = None,
+        instruction: str | None = None,
+    ) -> list[str]:
+        tok, model, device = _load_finetuned_paraphraser(MODEL_DIR)
+
+        # Prepare inputs with T5 paraphrase prefix
+        prefix = "paraphrase: "
+        extra = f" {instruction.strip()}" if instruction else ""
+        input_text = prefix + text + extra
+        enc = tok([input_text], return_tensors="pt", truncation=True)
+
+        try:
+            import torch  # type: ignore
+            if device != "cpu":
+                enc = {k: v.to(device) for k, v in enc.items()}
+        except Exception:
+            pass
+
+        # Ensure beams >= return sequences when using beam search
+        if not do_sample and num_return_sequences > num_beams:
+            num_beams = max(num_beams, num_return_sequences)
+
+        gen_kwargs = dict(
+            max_length=int(max_length),
+            num_return_sequences=int(num_return_sequences),
+        )
+        if do_sample:
+            gen_kwargs.update(dict(do_sample=True, temperature=float(temperature)))
+        else:
+            gen_kwargs.update(dict(num_beams=int(num_beams)))
+
+        # Optional advanced controls
+        if top_p is not None:
+            gen_kwargs["top_p"] = float(top_p)
+        if top_k is not None:
+            gen_kwargs["top_k"] = int(top_k)
+        if repetition_penalty is not None:
+            gen_kwargs["repetition_penalty"] = float(repetition_penalty)
+        if length_penalty is not None:
+            gen_kwargs["length_penalty"] = float(length_penalty)
+
+        outputs = model.generate(**enc, **gen_kwargs)
+        decoded = [tok.decode(out, skip_special_tokens=True) for out in outputs]
+        # Deduplicate while preserving order
+        seen = set()
+        uniq = []
+        for d in decoded:
+            if d not in seen:
+                seen.add(d)
+                uniq.append(d)
+        
+        return uniq
+
+    # -------- UI Controls --------
+    colA, colB = st.columns(2)
+    with colA:
+        ft_input_type = st.radio("Choose input type:", ["Plain Text", "PDF File"], key="ftp_input_type")
+        text_input = st.text_area("Paste your text here", height=220, key="ftp_text") if ft_input_type == "Plain Text" else ""
+        pdf_file = None if ft_input_type == "Plain Text" else st.file_uploader("Upload a PDF", type=["pdf"], key="ftp_pdf")
+    with colB:
+        st.write("Generation settings:")
+        complexity = st.selectbox("Complexity", ["Simple", "Medium", "Advanced"], index=0, help="Controls vocabulary and structure via decoding presets.")
+        strategy = st.selectbox("Decoding Strategy", ["Auto (by Complexity)", "Beam search", "Sampling"], index=0)
+        max_length = st.slider("Max length", 32, 128, 64, 4)
+
+        # Default placeholders; filled via presets below
+        num_beams = 5
+        temperature = 1.0
+        do_sample = False
+        top_p = None
+        top_k = None
+        repetition_penalty = None
+        length_penalty = None
+        instruction = None
+
+        def _complexity_preset(level: str) -> dict:
+            if level == "Simple":
+                return {
+                    "do_sample": False,
+                    "num_beams": 5,
+                    "temperature": 1.0,
+                    "top_p": None,
+                    "top_k": None,
+                    "repetition_penalty": 1.1,
+                    "length_penalty": 0.9,
+                    "instruction": "in simple language.",
+                }
+            elif level == "Medium":
+                return {
+                    "do_sample": True,
+                    "num_beams": 1,
+                    "temperature": 1.0,
+                    "top_p": 0.9,
+                    "top_k": 50,
+                    "repetition_penalty": 1.0,
+                    "length_penalty": 1.0,
+                    "instruction": "clear and natural.",
+                }
+            else:  # Advanced
+                return {
+                    "do_sample": True,
+                    "num_beams": 1,
+                    "temperature": 1.2,
+                    "top_p": 0.95,
+                    "top_k": 100,
+                    "repetition_penalty": 0.9,
+                    "length_penalty": 1.2,
+                    "instruction": "use advanced vocabulary and complex syntax.",
+                }
+
+        # Apply presets depending on strategy
+        params = _complexity_preset(complexity)
+        if strategy == "Auto (by Complexity)":
+            st.caption(f"Auto strategy: settings derived from '{complexity}'.")
+        elif strategy == "Beam search":
+            params = _complexity_preset(complexity)
+            params["num_beams"] = st.slider("Beams", 2, 8, int(params.get("num_beams", 5)))
+            params["do_sample"] = False
+            params["temperature"] = 1.0
+        else:  # Sampling
+            params = _complexity_preset(complexity)
+            params["do_sample"] = True
+            params["num_beams"] = 1
+            params["temperature"] = st.slider("Temperature", 0.7, 1.5, float(params.get("temperature", 1.0)), 0.05)
+
+        # Unpack params into local variables for generation call
+        do_sample = params.get("do_sample", do_sample)
+        num_beams = params.get("num_beams", num_beams)
+        temperature = params.get("temperature", temperature)
+        top_p = params.get("top_p", top_p)
+        top_k = params.get("top_k", top_k)
+        repetition_penalty = params.get("repetition_penalty", repetition_penalty)
+        length_penalty = params.get("length_penalty", length_penalty)
+        instruction = params.get("instruction", instruction)
+
+    # Optional reference paraphrase for evaluation (ROUGE/BLEU/PPL)
+    reference_para_input = st.text_area(
+        "Reference Paraphrase (optional for metrics evaluation)",
+        height=100,
+        key="ftp_reference_input",
+        help="Paste a gold paraphrase to compute ROUGE, BLEU, perplexity and readability metrics."
+    )
+
+    run = st.button("Generate Paraphrases", type="primary")
+
+    if run:
+        # Prepare text
+        source_text = text_input.strip()
+        if ft_input_type == "PDF File":
+            if pdf_file is None:
+                st.error("Please upload a PDF file.")
+                st.stop()
+            source_text = _extract_pdf_text(pdf_file)
+            if not source_text:
+                st.error("Unable to extract text from the uploaded PDF.")
+                st.stop()
+
+        if not source_text:
+            st.error("Please enter some text to paraphrase.")
+        else:
+            with st.spinner("Generating paraphrases with fine-tuned model..."):
+                try:
+                    outs = _generate_paraphrases(
+                        source_text,
+                        num_return_sequences=1,
+                        max_length=max_length,
+                        num_beams=num_beams,
+                        temperature=temperature,
+                        do_sample=do_sample,
+                        top_p=top_p,
+                        top_k=top_k,
+                        repetition_penalty=repetition_penalty,
+                        length_penalty=length_penalty,
+                        instruction=instruction,
+                    )
+
+                    # Side-by-side quick view (single output)
+                    st.markdown("### Original vs Paraphrase")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("**Original**")
+                        st.text_area("Original Text", value=source_text[:15000], height=180, key="ftp_original_view")
+                    with c2:
+                        st.markdown("**Paraphrase**")
+                        st.text_area("Paraphrase", value=(outs[0] if outs else ""), height=180, key="ftp_first_view")
+
+                    # --- Evaluation (if reference provided) ---
+                    if reference_para_input.strip():
+                        candidate_text = outs[0] if outs else ""
+                        with st.spinner("Evaluating ROUGE metrics..."):
+                            try:
+                                rouge_payload = {
+                                    "reference": reference_para_input.strip(),
+                                    "candidate": candidate_text,
+                                }
+                                rouge_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=rouge_payload, timeout=120)
+                                rouge_json = rouge_resp.json()
+                                if 'scores' in rouge_json:
+                                    st.markdown("### ROUGE Evaluation")
+                                    scores = rouge_json['scores']
+                                    try:
+                                        import pandas as pd
+                                        rows = []
+                                        for metric_name, vals in scores.items():
+                                            rows.append({"Metric": metric_name.upper(), "Precision": vals['precision'], "Recall": vals['recall'], "F1": vals['f1']})
+                                        df = pd.DataFrame(rows)
+                                        st.dataframe(df.style.format({"Precision": "{:.4f}", "Recall": "{:.4f}", "F1": "{:.4f}"}))
+
+                                        if plt is None:
+                                            st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
+                                        else:
+                                            fig2, ax2 = plt.subplots(figsize=(6, 3.2))
+                                            metrics_order = list(scores.keys())
+                                            x = np.arange(len(metrics_order)) if np is not None else list(range(len(metrics_order)))
+                                            width = 0.25
+                                            precisions = [scores[m]['precision'] for m in metrics_order]
+                                            recalls = [scores[m]['recall'] for m in metrics_order]
+                                            f1s = [scores[m]['f1'] for m in metrics_order]
+                                            if np is not None:
+                                                ax2.bar(x - width, precisions, width, label='Precision', color='#3b82f6')
+                                                ax2.bar(x, recalls, width, label='Recall', color='#10b981')
+                                                ax2.bar(x + width, f1s, width, label='F1', color='#f59e0b')
+                                                ax2.set_xticks(x)
+                                                ax2.set_xticklabels([m.upper() for m in metrics_order])
+                                            else:
+                                                positions = []
+                                                for i in range(len(metrics_order)):
+                                                    base = i * 3 * width
+                                                    positions.append(base)
+                                                    ax2.bar(base, precisions[i], width, label='Precision' if i == 0 else '', color='#3b82f6')
+                                                    ax2.bar(base + width, recalls[i], width, label='Recall' if i == 0 else '', color='#10b981')
+                                                    ax2.bar(base + 2*width, f1s[i], width, label='F1' if i == 0 else '', color='#f59e0b')
+                                                ax2.set_xticks([p + width for p in positions])
+                                                ax2.set_xticklabels([m.upper() for m in metrics_order])
+                                            ax2.set_ylim(0, 1)
+                                            ax2.set_ylabel('Score')
+                                            ax2.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.15))
+                                            st.pyplot(fig2, clear_figure=True)
+
+                                        st.caption(f"Reference tokens: {rouge_json.get('reference_tokens')} | Candidate tokens: {rouge_json.get('candidate_tokens')}")
+
+                                        # Save ROUGE CSV
+                                        try:
+                                            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                            csv_filename = os.path.join(ROUGE_OUTPUT_DIR, f"rouge_scores_{ts}.csv")
+                                            with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
+                                                writer = csv.writer(f)
+                                                writer.writerow(["metric", "precision", "recall", "f1", "reference_tokens", "candidate_tokens", "model", "summary_length"])
+                                                ref_tok = rouge_json.get('reference_tokens')
+                                                cand_tok = rouge_json.get('candidate_tokens')
+                                                for metric_name, vals in scores.items():
+                                                    writer.writerow([
+                                                        metric_name,
+                                                        vals['precision'],
+                                                        vals['recall'],
+                                                        vals['f1'],
+                                                        ref_tok,
+                                                        cand_tok,
+                                                        "fine-tuned-paraphrase",
+                                                        max_length,
+                                                    ])
+                                            st.info(f"ROUGE scores saved to {csv_filename}")
+                                        except Exception as file_e:
+                                            st.warning(f"Could not save ROUGE CSV: {file_e}")
+                                    except Exception as viz_e:
+                                        st.warning(f"ROUGE computed, but visualization failed: {viz_e}")
+                                else:
+                                    st.warning("ROUGE evaluation response did not contain scores.")
+                            except Exception as er:
+                                st.error(f"ROUGE evaluation failed: {er}")
+
+                        # Additional metrics (BLEU, Perplexity, Readability)
+                        with st.spinner("Calculating additional metrics..."):
+                            try:
+                                metrics_payload = {
+                                    "reference": reference_para_input.strip(),
+                                    "candidate": candidate_text,
+                                    "original_text": source_text if source_text else None,
+                                }
+                                metrics_resp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
+                                metrics_json = metrics_resp.json()
+
+                                with st.expander("Debug: Raw metrics API response", expanded=False):
+                                    st.json(metrics_json)
+
+                                if "error" not in metrics_json:
+                                    st.markdown("### Additional Quality Metrics")
+
+                                    # BLEU
+                                    if "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" not in metrics_json["bleu"]:
+                                        bleu_scores = metrics_json["bleu"]
+                                        st.markdown("#### BLEU Scores")
+                                        bleu_cols = st.columns(5)
+                                        with bleu_cols[0]:
+                                            st.metric("BLEU-1", f"{bleu_scores['bleu_1']:.4f}")
+                                        with bleu_cols[1]:
+                                            st.metric("BLEU-2", f"{bleu_scores['bleu_2']:.4f}")
+                                        with bleu_cols[2]:
+                                            st.metric("BLEU-3", f"{bleu_scores['bleu_3']:.4f}")
+                                        with bleu_cols[3]:
+                                            st.metric("BLEU-4", f"{bleu_scores['bleu_4']:.4f}")
+                                        with bleu_cols[4]:
+                                            st.metric("BLEU", f"{bleu_scores['bleu']:.4f}")
+                                        st.caption("BLEU scores measure similarity between the generated paraphrase and the reference. Higher is better (0-1).")
+                                    elif "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" in metrics_json["bleu"]:
+                                        st.info(f"BLEU unavailable: {metrics_json['bleu']['error']}")
+
+                                    # Perplexity
+                                    if "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" not in metrics_json["perplexity"]:
+                                        ppl = metrics_json["perplexity"].get("perplexity")
+                                        ngram = metrics_json["perplexity"].get("ngram")
+                                        st.markdown("#### Perplexity")
+                                        if ppl is not None:
+                                            st.metric("Perplexity", f"{ppl:.2f}")
+                                            st.caption(f"Lower is better. Using {ngram}-gram model.")
+                                    elif "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" in metrics_json["perplexity"]:
+                                        st.info(f"Perplexity unavailable: {metrics_json['perplexity']['error']}")
+
+                                    # Readability delta
+                                    if "readability" in metrics_json and "error" not in metrics_json["readability"] and metrics_json["readability"].get("delta"):
+                                        delta = metrics_json["readability"]["delta"]
+                                        original = metrics_json["readability"]["original"]
+                                        summary = metrics_json["readability"]["summary"]
+                                        st.markdown("#### Readability Metrics")
+                                        import pandas as pd
+                                        metrics_df = pd.DataFrame({
+                                            "Metric": [
+                                                "Flesch Reading Ease",
+                                                "Flesch-Kincaid Grade",
+                                                "Gunning Fog",
+                                                "SMOG Index",
+                                            ],
+                                            "Original": [
+                                                original["flesch_reading_ease"],
+                                                original["flesch_kincaid_grade"],
+                                                original["gunning_fog"],
+                                                original["smog_index"],
+                                            ],
+                                            "Paraphrase": [
+                                                summary["flesch_reading_ease"],
+                                                summary["flesch_kincaid_grade"],
+                                                summary["gunning_fog"],
+                                                summary["smog_index"],
+                                            ],
+                                            "Delta": [
+                                                delta["flesch_reading_ease"],
+                                                delta["flesch_kincaid_grade"],
+                                                delta["gunning_fog"],
+                                                delta["smog_index"],
+                                            ],
+                                        })
+                                        metrics_df["Delta"] = metrics_df["Delta"].apply(lambda x: f"+{x:.2f}" if x > 0 else f"{x:.2f}")
+                                        st.dataframe(
+                                            metrics_df,
+                                            column_config={
+                                                "Original": st.column_config.NumberColumn(format="%.2f"),
+                                                "Paraphrase": st.column_config.NumberColumn(format="%.2f"),
+                                            },
+                                        )
+                                    
+                                else:
+                                    st.warning(f"Failed to calculate additional metrics: {metrics_json.get('error', 'Unknown error')}")
+                            except Exception as metrics_err:
+                                st.warning(f"Failed to calculate additional metrics: {metrics_err}")
+                except Exception as e:
+                    st.error(f"Failed to generate paraphrases: {e}")
 
 # Global footer
 st.markdown(
