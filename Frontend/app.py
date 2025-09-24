@@ -181,7 +181,9 @@ tabs = st.tabs([
     "📊 Readability",
     "📝 Summarization",
     "✏️ Paraphrasing",
-    "📚 History",
+    "� Fine-tuned Summarization",
+    "�📚 History",
+    "📚 Dataset Eval",
 ])
 
 # Sign in tab
@@ -829,6 +831,112 @@ with tabs[5]:  # Tab 5 - Summarization
                                 except Exception as er:
                                     st.error(f"ROUGE evaluation failed: {er}")
 
+                                # Calculate additional metrics (BLEU, perplexity, readability delta)
+                                with st.spinner("Calculating additional metrics..."):
+                                    try:
+                                        metrics_payload = {
+                                            "reference": reference_input.strip(),
+                                            "candidate": result["summary"],
+                                            "original_text": original_text_display if original_text_display else None
+                                        }
+                                        
+                                        metrics_resp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
+                                        metrics_json = metrics_resp.json()
+                                        
+                                        # Debug: Collapsible raw response
+                                        with st.expander("Debug: Raw metrics API response", expanded=False):
+                                            st.json(metrics_json)
+                                        
+                                        if "error" not in metrics_json:
+                                            st.markdown("### Additional Quality Metrics")
+                                            
+                                            # BLEU scores
+                                            if "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" not in metrics_json["bleu"]:
+                                                bleu_scores = metrics_json["bleu"]
+                                                st.markdown("#### BLEU Scores")
+                                                bleu_cols = st.columns(5)
+                                                
+                                                with bleu_cols[0]:
+                                                    st.metric("BLEU-1", f"{bleu_scores['bleu_1']:.4f}")
+                                                with bleu_cols[1]:
+                                                    st.metric("BLEU-2", f"{bleu_scores['bleu_2']:.4f}")
+                                                with bleu_cols[2]:
+                                                    st.metric("BLEU-3", f"{bleu_scores['bleu_3']:.4f}")
+                                                with bleu_cols[3]:
+                                                    st.metric("BLEU-4", f"{bleu_scores['bleu_4']:.4f}")
+                                                with bleu_cols[4]:
+                                                    st.metric("BLEU", f"{bleu_scores['bleu']:.4f}")
+                                                
+                                                st.caption("BLEU scores measure the similarity between the generated summary and the reference. Higher scores (0-1) indicate better matches.")
+                                            elif "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" in metrics_json["bleu"]:
+                                                st.info(f"BLEU unavailable: {metrics_json['bleu']['error']}")
+                                            
+                                            # Perplexity
+                                            if "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" not in metrics_json["perplexity"]:
+                                                perplexity = metrics_json["perplexity"]["perplexity"]
+                                                ngram = metrics_json["perplexity"]["ngram"]
+                                                st.markdown("#### Perplexity")
+                                                st.metric("Perplexity", f"{perplexity:.2f}")
+                                                st.caption(f"Perplexity measures how 'surprised' the model is by the text. Lower values indicate more fluent text. (Using {ngram}-gram model)")
+                                            elif "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" in metrics_json["perplexity"]:
+                                                st.info(f"Perplexity unavailable: {metrics_json['perplexity']['error']}")
+                                            
+                                            # Readability delta
+                                            if "readability" in metrics_json and "error" not in metrics_json["readability"] and metrics_json["readability"].get("delta"):
+                                                delta = metrics_json["readability"]["delta"]
+                                                original = metrics_json["readability"]["original"]
+                                                summary = metrics_json["readability"]["summary"]
+                                                
+                                                st.markdown("#### Readability Metrics")
+                                                
+                                                import pandas as pd
+                                                
+                                                # Create a dataframe with selected readability metrics (first 4 only)
+                                                metrics_df = pd.DataFrame({
+                                                    "Metric": [
+                                                        "Flesch Reading Ease",
+                                                        "Flesch-Kincaid Grade",
+                                                        "Gunning Fog",
+                                                        "SMOG Index",
+                                                    ],
+                                                    "Original": [
+                                                        original["flesch_reading_ease"],
+                                                        original["flesch_kincaid_grade"],
+                                                        original["gunning_fog"],
+                                                        original["smog_index"],
+                                                    ],
+                                                    "Summary": [
+                                                        summary["flesch_reading_ease"],
+                                                        summary["flesch_kincaid_grade"],
+                                                        summary["gunning_fog"],
+                                                        summary["smog_index"],
+                                                    ],
+                                                    "Delta": [
+                                                        delta["flesch_reading_ease"],
+                                                        delta["flesch_kincaid_grade"],
+                                                        delta["gunning_fog"],
+                                                        delta["smog_index"],
+                                                    ]
+                                                })
+                                                
+                                                # Format the delta column with a + sign for positive values
+                                                metrics_df["Delta"] = metrics_df["Delta"].apply(lambda x: f"+{x:.2f}" if x > 0 else f"{x:.2f}")
+                                                
+                                                # Display the dataframe
+                                                st.dataframe(
+                                                    metrics_df,
+                                                    column_config={
+                                                        "Original": st.column_config.NumberColumn(format="%.2f"),
+                                                        "Summary": st.column_config.NumberColumn(format="%.2f")
+                                                    }
+                                                )
+                
+                                                st.caption("Readability metrics compare the complexity of the original text vs. the summary. For Flesch Reading Ease, higher scores mean easier readability. For all others, lower scores indicate easier readability.")
+                                        else:
+                                            st.warning(f"Failed to calculate additional metrics: {metrics_json.get('error', 'Unknown error')}")
+                                    except Exception as metrics_err:
+                                        st.warning(f"Failed to calculate additional metrics: {metrics_err}")
+
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
 
@@ -1120,6 +1228,206 @@ with tabs[6]:  # Tab 6 - Paraphrasing
                 else:
                     st.warning("No ROUGE results returned from the backend.")
 
+# Dataset Evaluation tab
+with tabs[9]:
+    st.markdown("""
+        <div style="text-align:center;margin-bottom:20px">
+            <img src="https://cdn-icons-png.flaticon.com/512/4471/4471606.png" width="60">
+            <h3 style="font-weight:600;color:#334155">Evaluate on Dataset (articles vs reference summaries)</h3>
+            <p style="color:#64748b;font-size:14px;">Load a CSV with columns <code>article</code> and <code>highlights</code>, generate summaries with your fine-tuned T5, and compare to references using BLEU-1..4, Perplexity, and Readability deltas.</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Choose source
+    src = st.radio("Data source", ["Built-in dataset", "Upload CSV"], horizontal=True)
+
+    selected_df = None
+    if src == "Built-in dataset":
+        # Offer selection of known CSVs if present
+        ds_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "summarization_dataset"))
+        options = []
+        path_map = {}
+        for name in ["train.csv", "validation.csv", "test.csv"]:
+            p = os.path.join(ds_dir, name)
+            if os.path.isfile(p):
+                options.append(name)
+                path_map[name] = p
+        if not options:
+            st.warning("No built-in dataset files found in 'summarization_dataset/'. Switch to Upload CSV.")
+        else:
+            choice = st.selectbox("Choose file", options)
+            if choice:
+                import pandas as pd
+                try:
+                    selected_df = pd.read_csv(path_map[choice])
+                except Exception as e:
+                    st.error(f"Failed to read CSV: {e}")
+    else:
+        ds_file = st.file_uploader("Upload dataset CSV (expects columns: article, highlights)", type=["csv"], key="ds_eval_uploader")
+        if ds_file is not None:
+            import pandas as pd
+            try:
+                selected_df = pd.read_csv(ds_file)
+            except Exception as e:
+                st.error(f"Failed to read CSV: {e}")
+
+    if selected_df is not None:
+        df = selected_df
+        if df is not None:
+            # Validate columns
+            expected_cols = {"article", "highlights"}
+            if not expected_cols.issubset(set(c.lower() for c in df.columns)):
+                st.error("CSV must contain columns: article, highlights")
+            else:
+                # Normalize column names
+                lower_map = {c.lower(): c for c in df.columns}
+                art_col = lower_map["article"]
+                ref_col = lower_map["highlights"]
+                df = df[[art_col, ref_col]].rename(columns={art_col: "article", ref_col: "reference"})
+
+                # Row range selection (1-based, inclusive)
+                total_rows = len(df)
+                c_start, c_end = st.columns(2)
+                with c_start:
+                    start_row = st.number_input(
+                        "Start row", min_value=1, max_value=max(1, total_rows), value=1, step=1,
+                        help="1-based index of the first row to evaluate."
+                    )
+                with c_end:
+                    default_end = min(total_rows, int(start_row) + 19)
+                    end_row = st.number_input(
+                        "End row (inclusive)", min_value=int(start_row), max_value=max(1, total_rows), value=default_end, step=1,
+                        help="1-based index of the last row to evaluate (inclusive)."
+                    )
+                st.caption("Tip: Indices are 1-based and inclusive. Example: 1–100 evaluates the first 100 rows.")
+
+                # Apply slicing safely (convert to 0-based, end exclusive)
+                s_idx = max(0, int(start_row) - 1)
+                e_idx = min(total_rows, int(end_row))
+                if s_idx >= e_idx:
+                    st.error("Start row must be less than or equal to End row.")
+                    st.stop()
+                df = df.iloc[s_idx:e_idx].copy()
+
+                st.info(f"Loaded {len(df)} samples (rows {int(start_row)}–{int(end_row)}). Click 'Run Evaluation' to generate summaries and compute metrics.")
+                run = st.button("Run Evaluation", type="primary")
+
+                if run:
+                    results = []
+                    prog = st.progress(0)
+                    for i, (idx, row) in enumerate(df.iterrows(), start=1):
+                        article = str(row["article"]) if not pd.isna(row["article"]) else ""
+                        reference = str(row["reference"]) if not pd.isna(row["reference"]) else ""
+                        if not article or not reference:
+                            continue
+                        try:
+                            # Summarize via backend fine-tuned model
+                            form = {
+                                "summary_length": "medium",
+                                "input_type": "text",
+                                "text_input": article,
+                            }
+                            resp = requests.post(f"{BACKEND_URL}/summarize/fine-tuned/", data=form, timeout=120)
+                            resp.raise_for_status()
+                            gen = resp.json().get("summary", "")
+
+                            # Metrics
+                            metrics_payload = {
+                                "reference": reference,
+                                "candidate": gen,
+                                "original_text": article,
+                            }
+                            mresp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
+                            mjson = mresp.json()
+
+                            # Extract key metrics safely
+                            def _get(d, path, default=None):
+                                cur = d
+                                try:
+                                    for p in path:
+                                        cur = cur[p]
+                                    return cur
+                                except Exception:
+                                    return default
+
+                            row_out = {
+                                "index": idx,
+                                "article": article,
+                                "generated": gen,
+                                "reference": reference,
+                                # BLEU
+                                "bleu_1": _get(mjson, ["bleu", "bleu_1"], float("nan")),
+                                "bleu_2": _get(mjson, ["bleu", "bleu_2"], float("nan")),
+                                "bleu_3": _get(mjson, ["bleu", "bleu_3"], float("nan")),
+                                "bleu_4": _get(mjson, ["bleu", "bleu_4"], float("nan")),
+                                "bleu": _get(mjson, ["bleu", "bleu"], float("nan")),
+                                # Perplexities
+                                "ppl_candidate": _get(mjson, ["perplexity_candidate", "perplexity"], _get(mjson, ["perplexity", "perplexity"], float("nan"))),
+                                "ppl_reference": _get(mjson, ["perplexity_reference", "perplexity"], float("nan")),
+                                # Readability deltas
+                                "delta_flesch_reading_ease": _get(mjson, ["readability_ref_candidate", "delta", "flesch_reading_ease"], float("nan")),
+                                "delta_flesch_kincaid": _get(mjson, ["readability_ref_candidate", "delta", "flesch_kincaid_grade"], float("nan")),
+                                "delta_gunning_fog": _get(mjson, ["readability_ref_candidate", "delta", "gunning_fog"], float("nan")),
+                                "delta_smog_index": _get(mjson, ["readability_ref_candidate", "delta", "smog_index"], float("nan")),
+                            }
+                            results.append(row_out)
+                        except Exception as e:
+                            st.warning(f"Row {idx} failed: {e}")
+                        finally:
+                            prog.progress(min(i / len(df), 1.0))
+
+                    if results:
+                        rdf = pd.DataFrame(results)
+                        st.success("Evaluation complete.")
+
+                        # Side-by-side viewer for first few samples
+                        st.markdown("### Sample Results")
+                        sample_n = min(5, len(rdf))
+                        for i in range(sample_n):
+                            r = rdf.iloc[i]
+                            st.markdown(f"#### Sample #{int(r['index'])}")
+                            c1, c2, c3 = st.columns(3)
+                            with c1:
+                                st.markdown("**Article**")
+                                st.write(r["article"])
+                            with c2:
+                                st.markdown("**Generated Summary**")
+                                st.write(r["generated"])
+                            with c3:
+                                st.markdown("**Reference Summary**")
+                                st.write(r["reference"])
+                            m1, m2, m3 = st.columns(3)
+                            with m1:
+                                st.metric("BLEU-1", f"{r['bleu_1']:.4f}" if pd.notna(r['bleu_1']) else "-")
+                                st.metric("BLEU-4", f"{r['bleu_4']:.4f}" if pd.notna(r['bleu_4']) else "-")
+                            with m2:
+                                st.metric("PPL (gen)", f"{r['ppl_candidate']:.2f}" if pd.notna(r['ppl_candidate']) else "-")
+                                st.metric("PPL (ref)", f"{r['ppl_reference']:.2f}" if pd.notna(r['ppl_reference']) else "-")
+                            with m3:
+                                st.metric("Δ Flesch Ease (gen-ref)", f"{r['delta_flesch_reading_ease']:+.2f}" if pd.notna(r['delta_flesch_reading_ease']) else "-")
+                                st.metric("Δ SMOG (gen-ref)", f"{r['delta_smog_index']:+.2f}" if pd.notna(r['delta_smog_index']) else "-")
+                            st.divider()
+
+                        # Download full results
+                        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        out_csv = rdf.to_csv(index=False).encode("utf-8")
+                        st.download_button(
+                            label="Download Results CSV",
+                            data=out_csv,
+                            file_name=f"eval_results_{ts}.csv",
+                            mime="text/csv",
+                        )
+
+                        # Aggregate metrics
+                        st.markdown("### Aggregates")
+                        agg = rdf[[
+                            "bleu_1","bleu_2","bleu_3","bleu_4","bleu",
+                            "ppl_candidate","ppl_reference",
+                            "delta_flesch_reading_ease","delta_flesch_kincaid","delta_gunning_fog","delta_smog_index"
+                        ]].mean(numeric_only=True)
+                        st.dataframe(agg.to_frame("mean").round(4))
+                
+
 # Simplified sidebar with essential information
 st.sidebar.markdown("""
 <div style="text-align:center;margin-bottom:20px;">
@@ -1151,9 +1459,365 @@ Textmorph provides advanced text analysis and summarization using AI algorithms:
 - Document processing
 """)
 
+# -------------------- Fine-tuned Summarization Tab --------------------
+
+with tabs[7]:  # Tab 7 - Fine-tuned Summarization
+    token = st.session_state.get("token")
+    if not token:
+        st.markdown("""
+            <div style='text-align:center;padding:50px 0;'>
+                <h3 style='color:#334155;margin-bottom:10px;'>Sign in required</h3>
+                <p style='color:#64748b;'>Please sign in to access the fine-tuned summarization feature.</p>
+            </div>
+        """, unsafe_allow_html=True)
+        # Early return pattern – don't render summarization UI when not authenticated
+        st.stop()
+        
+    st.subheader("Summarize with T5 Optimization")
+    
+    col1, col2 = st.columns(2)
+
+    with col1:
+        input_type = st.radio("Choose input type:", ["Plain Text", "PDF File"], key="ft_input_type")
+        summary_length = st.selectbox(
+            "Summary Length",
+            options=["short", "medium", "long"],
+            index=1,
+            key="ft_summary_length"
+        )
+
+    with col2:
+        st.write("Instructions:")
+        st.markdown("- Paste text or upload a PDF.\n- Choose a summary length.\n- Click 'Generate Summary'.\n- Provide a reference summary (optional) to calculate BLEU, perplexity, and readability metrics.\n- This tab uses a custom fine-tuned T5 model specifically trained for high-quality summarization.")
+
+    text_input = ""
+    pdf_file = None
+
+    if input_type == "Plain Text":
+        text_input = st.text_area("Paste your text here", height=200, key="ft_text_input")
+    else:
+        pdf_file = st.file_uploader("Upload a PDF", type=["pdf"], key="ft_pdf_file")
+
+    # Reference summary input for metrics evaluation (optional)
+    reference_input = st.text_area("Reference Summary (optional for metrics evaluation)", height=150, key="ft_reference_input", help="Paste a human-written or gold summary here to compute ROUGE, BLEU, perplexity, and readability metrics.")
+
+    # Initialize session state for last summary
+    if 'ft_last_summary' not in st.session_state:
+        st.session_state['ft_last_summary'] = None
+        st.session_state['ft_last_length'] = None
+
+    generate_clicked = st.button("Generate Summary", key="ft_generate_button")
+
+    if generate_clicked:
+        if (input_type == "Plain Text" and not text_input.strip()) or (input_type == "PDF File" and not pdf_file):
+            st.error("Please provide text or upload a PDF.")
+        else:
+            with st.spinner("Generating summary with fine-tuned T5 model..."):
+                # Include user email if available for history tracking
+                form_data = {
+                    "summary_length": summary_length,
+                    "input_type": "pdf" if input_type == "PDF File" else "text",
+                    "text_input": text_input
+                }
+                # Add user email for history if present in session
+                if st.session_state.get("user_email"):
+                    form_data["user_email"] = st.session_state["user_email"]
+
+                files = None
+                if pdf_file:
+                    files = {"pdf_file": (pdf_file.name, pdf_file, "application/pdf")}
+
+                try:
+                    response = requests.post(
+                        f"{BACKEND_URL}/summarize/fine-tuned/",
+                        data=form_data,
+                        files=files
+                    )
+                    result = response.json()
+
+                    if "error" in result:
+                        st.error(result["error"])
+                    else:
+                        st.success("Summary generated successfully with fine-tuned T5 model!")
+
+                        # Prepare original text for side-by-side view
+                        original_text_display = ""
+                        if input_type == "Plain Text":
+                            original_text_display = text_input.strip()
+                        else:
+                            # Try to extract PDF text (lightweight) for display
+                            try:
+                                if pdf_file is not None and PyPDF2 is not None:
+                                    pdf_file.seek(0)
+                                    reader = PyPDF2.PdfReader(pdf_file)
+                                    pages = [p.extract_text() or "" for p in reader.pages]
+                                    original_text_display = "\n".join(pages).strip()
+                                    # --- Normalize PDF text so it shows as readable paragraphs ---
+                                    try:
+                                        # Keep paragraph breaks (double newlines) but collapse single newlines to spaces
+                                        t = original_text_display.replace("\r\n", "\n")
+                                        # Join hyphenated line breaks like "exam-\nple" -> "example"
+                                        t = re.sub(r"(\w)-\s*\n\s*(\w)", r"\1\2", t)
+                                        # Reduce 3+ newlines to 2 (standard paragraph break)
+                                        t = re.sub(r"\n{3,}", "\n\n", t)
+                                        # Replace remaining single newlines with a space (preserve double newlines)
+                                        t = re.sub(r"(?<!\n)\n(?!\n)", " ", t)
+                                        # Normalize extra spaces
+                                        t = re.sub(r"[ \t]{2,}", " ", t)
+                                        # Remove spaces before punctuation
+                                        t = re.sub(r" +([.,;:!?])", r"\1", t)
+                                        original_text_display = t.strip()
+                                    except Exception:
+                                        # If normalization fails for any reason, fall back to raw extracted text
+                                        pass
+                            except Exception:
+                                original_text_display = "(Unable to extract PDF text for preview)"
+
+                        summary_text_display = result["summary"].strip()
+
+                        def _word_count(t: str) -> int:
+                            return len([w for w in re.findall(r"\w+", t)]) if t else 0
+
+                        wc_orig = _word_count(original_text_display)
+                        wc_sum = _word_count(summary_text_display)
+                        compression = (1 - (wc_sum / wc_orig)) * 100 if wc_orig > 0 else 0
+
+                        col_orig, col_sum = st.columns(2)
+                        with col_orig:
+                            st.markdown("#### Original Text")
+                            st.caption(f"{wc_orig} words")
+                            st.text_area(label="Original", value=original_text_display[:15000], height=260, key="ft_orig_view")
+                        with col_sum:
+                            st.markdown("#### Summary (Fine-tuned T5)")
+                            st.caption(f"{wc_sum} words")
+                            st.text_area(label="Summary", value=summary_text_display, height=260, key="ft_sum_view")
+                            # Quick metrics row
+                            metric_cols = st.columns(2)
+                            with metric_cols[0]:
+                                if wc_orig > 0:
+                                    st.markdown(f"**Compression:** {compression:.0f}%")
+                                else:
+                                    st.markdown("**Compression:** n/a")
+                            with metric_cols[1]:
+                                # Placeholder for ROUGE F1 after evaluation (updated later)
+                                st.markdown("**ROUGE F1:** _evaluate to view_")
+
+                        # Feature description and model information
+                        with st.container():
+                            st.markdown("<div style='margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f1f5f9'>" \
+                                        "<strong>Fine-tuned T5 Summarization Model</strong><ul style='margin-top:6px;'>" \
+                                        "<li>Custom T5-small model fine-tuned on a specialized dataset</li>" \
+                                        "<li>Optimized for high-quality, contextually relevant summaries</li>" \
+                                        "<li>Enhanced beam search configuration for better outputs</li>" \
+                                        "<li>Comprehensive metrics: ROUGE, BLEU, Perplexity, and Readability</li>" \
+                                        "<li>Efficient processing of longer texts through chunking</li>" \
+                                        "<li>Improved coherence and factual accuracy in generated summaries</li>" \
+                                        "</ul></div>", unsafe_allow_html=True)
+                        
+                        st.session_state['ft_last_summary'] = result["summary"]
+                        st.session_state['ft_last_length'] = summary_length
+
+                        # Auto-evaluate if reference provided up front
+                        if reference_input.strip():
+                            with st.spinner("Evaluating ROUGE metrics..."):
+                                try:
+                                    rouge_payload = {
+                                        "reference": reference_input.strip(),
+                                        "candidate": result["summary"]
+                                    }
+                                    rouge_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=rouge_payload, timeout=120)
+                                    rouge_json = rouge_resp.json()
+                                    if 'scores' in rouge_json:
+                                        st.markdown("### ROUGE Evaluation")
+                                        scores = rouge_json['scores']
+                                        try:
+                                            import pandas as pd
+                                            rows = []
+                                            for metric_name, vals in scores.items():
+                                                rows.append({"Metric": metric_name.upper(), "Precision": vals['precision'], "Recall": vals['recall'], "F1": vals['f1']})
+                                            df = pd.DataFrame(rows)
+                                            st.dataframe(df.style.format({"Precision": "{:.4f}", "Recall": "{:.4f}", "F1": "{:.4f}"}))
+
+                                            if plt is None:
+                                                st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
+                                            else:
+                                                # Grouped precision/recall/F1 chart
+                                                fig2, ax2 = plt.subplots(figsize=(6, 3.2))
+                                                metrics_order = list(scores.keys())
+                                                x = np.arange(len(metrics_order)) if np is not None else list(range(len(metrics_order)))
+                                                width = 0.25
+                                                precisions = [scores[m]['precision'] for m in metrics_order]
+                                                recalls = [scores[m]['recall'] for m in metrics_order]
+                                                f1s = [scores[m]['f1'] for m in metrics_order]
+                                                if np is not None:
+                                                    ax2.bar(x - width, precisions, width, label='Precision', color='#3b82f6')
+                                                    ax2.bar(x, recalls, width, label='Recall', color='#10b981')
+                                                    ax2.bar(x + width, f1s, width, label='F1', color='#f59e0b')
+                                                    ax2.set_xticks(x)
+                                                    ax2.set_xticklabels([m.upper() for m in metrics_order])
+                                                else:
+                                                    # Fallback without numpy (less precise spacing)
+                                                    positions = []
+                                                    for i in range(len(metrics_order)):
+                                                        base = i * 3 * width
+                                                        positions.append(base)
+                                                        ax2.bar(base, precisions[i], width, label='Precision' if i == 0 else '', color='#3b82f6')
+                                                        ax2.bar(base + width, recalls[i], width, label='Recall' if i == 0 else '', color='#10b981')
+                                                        ax2.bar(base + 2*width, f1s[i], width, label='F1' if i == 0 else '', color='#f59e0b')
+                                                    ax2.set_xticks([p + width for p in positions])
+                                                    ax2.set_xticklabels([m.upper() for m in metrics_order])
+                                                ax2.set_ylim(0, 1)
+                                                ax2.set_ylabel('Score')
+                            
+                                                ax2.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.15))
+                                                st.pyplot(fig2, clear_figure=True)
+
+                                                st.caption(f"Reference tokens: {rouge_json.get('reference_tokens')} | Candidate tokens: {rouge_json.get('candidate_tokens')}")
+
+                                                # --- Auto-save ROUGE scores to CSV ---
+                                                try:
+                                                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                                                    csv_filename = os.path.join(ROUGE_OUTPUT_DIR, f"rouge_scores_{ts}.csv")
+                                                    # Write a header + rows for each metric
+                                                    with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
+                                                        writer = csv.writer(f)
+                                                        writer.writerow(["metric", "precision", "recall", "f1", "reference_tokens", "candidate_tokens", "model", "summary_length"])
+                                                        ref_tok = rouge_json.get('reference_tokens')
+                                                        cand_tok = rouge_json.get('candidate_tokens')
+                                                        for metric_name, vals in scores.items():
+                                                            writer.writerow([
+                                                                metric_name,
+                                                                vals['precision'],
+                                                                vals['recall'],
+                                                                vals['f1'],
+                                                                ref_tok,
+                                                                cand_tok,
+                                                                "fine-tuned-t5",
+                                                                st.session_state.get('ft_last_length')
+                                                            ])
+                                                    st.info(f"ROUGE scores saved to {csv_filename}")
+                                                except Exception as file_e:
+                                                    st.warning(f"Could not save ROUGE CSV: {file_e}")
+                                        except Exception as viz_e:
+                                            st.warning(f"ROUGE computed, but visualization failed: {viz_e}")
+                                    else:
+                                        st.warning("ROUGE evaluation response did not contain scores.")
+                                except Exception as er:
+                                    st.error(f"ROUGE evaluation failed: {er}")
+
+                                # Calculate additional metrics (BLEU, perplexity, readability delta)
+                                with st.spinner("Calculating additional metrics..."):
+                                    try:
+                                        metrics_payload = {
+                                            "reference": reference_input.strip(),
+                                            "candidate": result["summary"],
+                                            "original_text": original_text_display if original_text_display else None
+                                        }
+                                        
+                                        metrics_resp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
+                                        metrics_json = metrics_resp.json()
+                                        
+                                        # Debug: Collapsible raw response
+                                        with st.expander("Debug: Raw metrics API response", expanded=False):
+                                            st.json(metrics_json)
+                                        
+                                        if "error" not in metrics_json:
+                                            st.markdown("### Additional Quality Metrics")
+                                            
+                                            # BLEU scores
+                                            if "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" not in metrics_json["bleu"]:
+                                                bleu_scores = metrics_json["bleu"]
+                                                st.markdown("#### BLEU Scores")
+                                                bleu_cols = st.columns(5)
+                                                
+                                                with bleu_cols[0]:
+                                                    st.metric("BLEU-1", f"{bleu_scores['bleu_1']:.4f}")
+                                                with bleu_cols[1]:
+                                                    st.metric("BLEU-2", f"{bleu_scores['bleu_2']:.4f}")
+                                                with bleu_cols[2]:
+                                                    st.metric("BLEU-3", f"{bleu_scores['bleu_3']:.4f}")
+                                                with bleu_cols[3]:
+                                                    st.metric("BLEU-4", f"{bleu_scores['bleu_4']:.4f}")
+                                                with bleu_cols[4]:
+                                                    st.metric("BLEU", f"{bleu_scores['bleu']:.4f}")
+                                                
+                                                st.caption("BLEU scores measure the similarity between the generated summary and the reference. Higher scores (0-1) indicate better matches.")
+                                            elif "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" in metrics_json["bleu"]:
+                                                st.info(f"BLEU unavailable: {metrics_json['bleu']['error']}")
+                                            
+                                            # Perplexity
+                                            if "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" not in metrics_json["perplexity"]:
+                                                perplexity = metrics_json["perplexity"]["perplexity"]
+                                                ngram = metrics_json["perplexity"]["ngram"]
+                                                st.markdown("#### Perplexity")
+                                                st.metric("Perplexity", f"{perplexity:.2f}")
+                                                st.caption(f"Perplexity measures how 'surprised' the model is by the text. Lower values indicate more fluent text. (Using {ngram}-gram model)")
+                                            elif "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" in metrics_json["perplexity"]:
+                                                st.info(f"Perplexity unavailable: {metrics_json['perplexity']['error']}")
+                                            
+                                            # Readability delta
+                                            if "readability" in metrics_json and "error" not in metrics_json["readability"] and metrics_json["readability"].get("delta"):
+                                                delta = metrics_json["readability"]["delta"]
+                                                original = metrics_json["readability"]["original"]
+                                                summary = metrics_json["readability"]["summary"]
+                                                
+                                                st.markdown("#### Readability Metrics")
+                                                
+                                                import pandas as pd
+                                                
+                                                # Create a dataframe with selected readability metrics (first 4 only)
+                                                metrics_df = pd.DataFrame({
+                                                    "Metric": [
+                                                        "Flesch Reading Ease",
+                                                        "Flesch-Kincaid Grade",
+                                                        "Gunning Fog",
+                                                        "SMOG Index",
+                                                    ],
+                                                    "Original": [
+                                                        original["flesch_reading_ease"],
+                                                        original["flesch_kincaid_grade"],
+                                                        original["gunning_fog"],
+                                                        original["smog_index"],
+                                                    ],
+                                                    "Summary": [
+                                                        summary["flesch_reading_ease"],
+                                                        summary["flesch_kincaid_grade"],
+                                                        summary["gunning_fog"],
+                                                        summary["smog_index"],
+                                                    ],
+                                                    "Delta": [
+                                                        delta["flesch_reading_ease"],
+                                                        delta["flesch_kincaid_grade"],
+                                                        delta["gunning_fog"],
+                                                        delta["smog_index"],
+                                                    ]
+                                                })
+                                                
+                                                # Format the delta column with a + sign for positive values
+                                                metrics_df["Delta"] = metrics_df["Delta"].apply(lambda x: f"+{x:.2f}" if x > 0 else f"{x:.2f}")
+                                                
+                                                # Display the dataframe
+                                                st.dataframe(
+                                                    metrics_df,
+                                                    column_config={
+                                                        "Original": st.column_config.NumberColumn(format="%.2f"),
+                                                        "Summary": st.column_config.NumberColumn(format="%.2f")
+                                                    }
+                                                )
+                
+                                                st.caption("Readability metrics compare the complexity of the original text vs. the summary. For Flesch Reading Ease, higher scores mean easier readability. For all others, lower scores indicate easier readability.")
+                                        else:
+                                            st.warning(f"Failed to calculate additional metrics: {metrics_json.get('error', 'Unknown error')}")
+                                    except Exception as metrics_err:
+                                        st.warning(f"Failed to calculate additional metrics: {metrics_err}")
+
+                except Exception as e:
+                    st.error(f"An error occurred: {e}")
+
+
 # -------------------- History Tab --------------------
 
-with tabs[7]:  # Tab 7 - History
+with tabs[8]:  # Tab 8 - History
     token = st.session_state.get("token")
     if not token:
         st.warning("Please sign in to view your history.")

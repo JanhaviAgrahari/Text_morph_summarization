@@ -13,8 +13,11 @@ import logging
 from .summarizer import summarize_text, MODELS
 from .pdf_utils import extract_text_from_pdf
 from .parahrase import paraphrase_text, analyze_text_complexity
+from .fine_tuned_summarizer import summarize_text_with_fine_tuned_model
+from .metrics import calculate_all_metrics
 from . import schemas as _schemas
 from . import schemas as schemas
+from .metrics_schemas import MetricsRequest, MetricsResponse
 
 try:
     from rouge_score import rouge_scorer
@@ -183,6 +186,78 @@ async def summarize_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/summarize/fine-tuned/")
+async def fine_tuned_summarize_endpoint(
+    summary_length: str = Form("medium"),
+    input_type: str = Form("text"),  # "text" or "pdf"
+    text_input: str = Form(""),
+    pdf_file: UploadFile = File(None),
+    user_email: str = Form(None),  # Optional user email to save in history
+    db: Session = Depends(get_db)
+):
+    """Summarize plain text or an uploaded PDF using the fine-tuned T5 model.
+    
+    summary_length: short | medium | long (mapped internally in summarizer)
+    input_type: 'text' or 'pdf'
+    """
+    try:
+        summary_length = (summary_length or "medium").lower()
+        if summary_length not in {"short", "medium", "long"}:
+            raise HTTPException(status_code=422, detail="summary_length must be short, medium, or long")
+
+        input_type = (input_type or "text").lower()
+        if input_type not in {"text", "pdf"}:
+            raise HTTPException(status_code=422, detail="input_type must be 'text' or 'pdf'")
+
+        if input_type == "pdf":
+            if not pdf_file:
+                raise HTTPException(status_code=400, detail="No PDF uploaded")
+            pdf_path = os.path.join(UPLOAD_DIR, pdf_file.filename)
+            with open(pdf_path, "wb") as f:
+                f.write(await pdf_file.read())
+            extracted_text = extract_text_from_pdf(pdf_path)
+            if not extracted_text:
+                raise HTTPException(status_code=400, detail="Unable to extract text from PDF")
+            text_to_summarize = extracted_text
+        else:
+            text_to_summarize = (text_input or "").strip()
+            if not text_to_summarize:
+                raise HTTPException(status_code=400, detail="No text provided")
+
+        if len(text_to_summarize) < 30:
+            raise HTTPException(status_code=400, detail="Text is too short to summarize (min ~30 characters)")
+
+        # Use fine-tuned model for summarization
+        summary = summarize_text_with_fine_tuned_model(text_to_summarize, summary_length=summary_length)
+        
+        # Save to history if user is provided
+        if user_email:
+            user = db.query(models.User).filter(models.User.email == user_email).first()
+            if user:
+                # Create a history entry
+                history_entry = schemas.CreateHistoryEntry(
+                    user_id=user.id,
+                    type="summary",
+                    original_text=text_to_summarize,
+                    result_text=summary,
+                    model="fine-tuned-t5",
+                    parameters=json.dumps({"summary_length": summary_length})
+                )
+                crud.create_history_entry(db, history_entry)
+        
+        return {
+            "summary": summary,
+            "model": "fine-tuned-t5",
+            "original_length": len(text_to_summarize.split()),
+            "summary_length": len(summary.split())
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Fine-tuned summarization failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/evaluate/rouge", response_model=_schemas.RougeEvalResponse)
 def evaluate_rouge(payload: _schemas.RougeEvalRequest):
     """Compute ROUGE scores between a reference (gold) and candidate summary.
@@ -216,6 +291,35 @@ def evaluate_rouge(payload: _schemas.RougeEvalRequest):
         reference_tokens=len(ref.split()),
         candidate_tokens=len(cand.split())
     )
+
+
+@app.post("/evaluate/metrics", response_model=MetricsResponse)
+def evaluate_metrics(payload: MetricsRequest):
+    """
+    Calculate comprehensive metrics between a reference and candidate summary.
+    
+    Metrics include:
+    - BLEU scores (1-4 grams)
+    - Perplexity (returned for candidate and reference)
+    - Readability delta (original vs candidate if original_text is provided)
+    - Readability delta (reference vs candidate)
+    """
+    try:
+        ref = (payload.reference or "").strip()
+        cand = (payload.candidate or "").strip()
+        original = payload.original_text.strip() if payload.original_text else None
+        
+        if not ref or not cand:
+            raise HTTPException(status_code=422, detail="Both reference and candidate must be non-empty")
+            
+        # Calculate all metrics
+        results = calculate_all_metrics(ref, cand, original)
+        
+        # Format and return the results
+        return results
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Metrics evaluation failed")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # -------------------- History Endpoints --------------------

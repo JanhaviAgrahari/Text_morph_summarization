@@ -111,3 +111,17 @@ rouge_score/*
 # Uploaded PDFs: keep directory, ignore uploaded files
 Backend/uploaded_pdfs/*
 !Backend/uploaded_pdfs/.gitkeep
+
+# Model artifacts and datasets (ignore large or generated files)
+saved_paraphrasing_model/*
+!saved_paraphrasing_model/.gitkeep
+
+fine_tuned_t5_summarizer/*
+!fine_tuned_t5_summarizer/.gitkeep
+
+summarization_dataset/*
+!summarization_dataset/.gitkeep
+
+# Root-level uploaded PDFs
+uploaded_pdfs/*
+!uploaded_pdfs/.gitkeep
