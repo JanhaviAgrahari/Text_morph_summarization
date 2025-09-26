@@ -4,7 +4,7 @@ import re
 import os
 import csv
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 from typing import Optional, Tuple, Any
 
@@ -35,7 +35,8 @@ except ImportError:  # pragma: no cover
     np = None
 
 # --- Constants & configuration ---
-BACKEND_URL = "http://127.0.0.1:8000"
+# Allow overriding backend URL via environment variable BACKEND_URL
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 API_URL = BACKEND_URL  # Alias for legacy references
 ROUGE_OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rouge_score"))
 os.makedirs(ROUGE_OUTPUT_DIR, exist_ok=True)
@@ -52,6 +53,16 @@ if "_page_config_set" not in st.session_state:
 
 # Simple light/dark toggle (client side simulation)
 theme_choice = st.sidebar.radio("Theme", ["Light", "Dark"], index=0, horizontal=True)
+with st.sidebar:
+    # Backend health indicator
+    try:
+        r = requests.get(f"{BACKEND_URL}/ping", timeout=3)
+        if r.ok:
+            st.caption(f"Backend: ✅ Connected ({BACKEND_URL})")
+        else:
+            st.caption(f"Backend: ⚠️ Unreachable ({BACKEND_URL})")
+    except Exception:
+        st.caption(f"Backend: ❌ Not reachable ({BACKEND_URL})")
 dark = theme_choice == "Dark"
 
 color_block = f"""
@@ -97,6 +108,20 @@ body { background: BODY_BG; color: var(--text-color); }
 section[data-testid="stSidebar"] > div { background: var(--bg-panel); }
 section[data-testid="stSidebar"] * { color: var(--text-color)!important; }
 hr { border-color: var(--border-color); }
+/* Buttons */
+.stButton>button { background: linear-gradient(135deg,var(--accent-grad-start),var(--accent-grad-end)); color:#fff; border:0; border-radius:10px; padding:0.5rem 0.9rem; font-weight:600; box-shadow:0 2px 8px rgba(99,102,241,.25); }
+.stButton>button:hover { filter: brightness(1.05); box-shadow:0 4px 12px rgba(99,102,241,.35); }
+/* Pills */
+.tm-pills { margin:6px 0 2px; }
+.tm-pill { display:inline-block; padding:4px 10px; border-radius:999px; font-size:.78rem; font-weight:600; margin:0 6px 6px 0; border:1px solid var(--border-color); background:var(--bg-alt); }
+.tm-pill.acc { background:rgba(99,102,241,.12); color:#6366f1; border-color:rgba(99,102,241,.35); }
+.tm-pill.ok { background:rgba(16,185,129,.12); color:#10b981; border-color:rgba(16,185,129,.35); }
+.tm-pill.warn { background:rgba(245,158,11,.12); color:#f59e0b; border-color:rgba(245,158,11,.35); }
+.tm-pill.info { background:rgba(59,130,246,.12); color:#3b82f6; border-color:rgba(59,130,246,.35); }
+/* Cards */
+.tm-card-border { border:1px dashed var(--border-color); border-radius:12px; padding:12px; }
+/* File uploader */
+div[data-testid="stFileUploader"] { background: var(--bg-panel); border:1px dashed var(--border-color); padding:10px; border-radius:10px; }
 </style>
 """
 
@@ -113,6 +138,14 @@ st.markdown(
 """,
         unsafe_allow_html=True,
 )
+
+# --- Small UI helpers ---
+def _pill(label: str, kind: str = "acc") -> str:
+    return f"<span class='tm-pill {kind}'>{label}</span>"
+
+def show_pills(items: list[tuple[str, str]]):
+    html = "<div class='tm-pills'>" + " ".join([_pill(text, kind) for text, kind in items]) + "</div>"
+    st.markdown(html, unsafe_allow_html=True)
 
 # --- Simple API helpers ---
 def api_post(path: str, payload: dict, token: Optional[str] = None, timeout: int = 60) -> Tuple[bool, Any]:
@@ -1236,7 +1269,7 @@ with tabs[9]:
         <div style="text-align:center;margin-bottom:20px">
             <img src="https://cdn-icons-png.flaticon.com/512/4471/4471606.png" width="60">
             <h3 style="font-weight:600;color:#334155">Evaluate on Dataset (articles vs reference summaries)</h3>
-            <p style="color:#64748b;font-size:14px;">Load a CSV with columns <code>article</code> and <code>highlights</code>, generate summaries with your fine-tuned T5, and compare to references using BLEU-1..4, Perplexity, and Readability deltas.</p>
+            <p style="color:#64748b;font-size:14px;">Load a CSV with columns <code>article</code> and <code>highlights</code>, choose a model (T5-small or BART-base), generate summaries with your selected fine-tuned model, and compare to references using BLEU-1..4, Perplexity, and Readability deltas.</p>
         </div>
     """, unsafe_allow_html=True)
 
@@ -1311,7 +1344,21 @@ with tabs[9]:
                     st.stop()
                 df = df.iloc[s_idx:e_idx].copy()
 
-                st.info(f"Loaded {len(df)} samples (rows {int(start_row)}–{int(end_row)}). Click 'Run Evaluation' to generate summaries and compute metrics.")
+                # Model selection for fine-tuned summarization
+                model_choice_ds = st.selectbox(
+                    "Model",
+                    options=["T5-small", "BART-base"],
+                    index=0,
+                    key="ds_model_choice",
+                    help="Choose which fine-tuned model to use for generating summaries."
+                )
+
+                show_pills([
+                    (f"Rows: {int(start_row)}–{int(end_row)} ({len(df)} samples)", "info"),
+                    (f"Model: {model_choice_ds}", "acc"),
+                    ("Eval: BLEU/PPL/Readability/ROUGE", "ok")
+                ])
+                st.caption("Click 'Run Evaluation' to generate summaries and compute metrics.")
                 run = st.button("Run Evaluation", type="primary")
 
                 if run:
@@ -1328,6 +1375,7 @@ with tabs[9]:
                                 "summary_length": "medium",
                                 "input_type": "text",
                                 "text_input": article,
+                                "model_choice": ("t5" if model_choice_ds == "T5-small" else "bart"),
                             }
                             resp = requests.post(f"{BACKEND_URL}/summarize/fine-tuned/", data=form, timeout=120)
                             resp.raise_for_status()
@@ -1352,6 +1400,18 @@ with tabs[9]:
                                 except Exception:
                                     return default
 
+                            # ROUGE scores (F1) via backend
+                            try:
+                                r_payload = {"reference": reference, "candidate": gen}
+                                r_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=r_payload, timeout=60)
+                                r_json = r_resp.json() if r_resp.ok else {}
+                                r_scores = r_json.get("scores", {}) if isinstance(r_json, dict) else {}
+                                r1_f1 = float(r_scores.get("rouge1", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rouge1", {}), dict) else float("nan")
+                                r2_f1 = float(r_scores.get("rouge2", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rouge2", {}), dict) else float("nan")
+                                rL_f1 = float(r_scores.get("rougeL", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rougeL", {}), dict) else float("nan")
+                            except Exception:
+                                r1_f1 = r2_f1 = rL_f1 = float("nan")
+
                             row_out = {
                                 "index": idx,
                                 "article": article,
@@ -1363,6 +1423,10 @@ with tabs[9]:
                                 "bleu_3": _get(mjson, ["bleu", "bleu_3"], float("nan")),
                                 "bleu_4": _get(mjson, ["bleu", "bleu_4"], float("nan")),
                                 "bleu": _get(mjson, ["bleu", "bleu"], float("nan")),
+                                # ROUGE (F1)
+                                "rouge1_f1": r1_f1,
+                                "rouge2_f1": r2_f1,
+                                "rougeL_f1": rL_f1,
                                 # Perplexities
                                 "ppl_candidate": _get(mjson, ["perplexity_candidate", "perplexity"], _get(mjson, ["perplexity", "perplexity"], float("nan"))),
                                 "ppl_reference": _get(mjson, ["perplexity_reference", "perplexity"], float("nan")),
@@ -1424,10 +1488,99 @@ with tabs[9]:
                         st.markdown("### Aggregates")
                         agg = rdf[[
                             "bleu_1","bleu_2","bleu_3","bleu_4","bleu",
+                            "rouge1_f1","rouge2_f1","rougeL_f1",
                             "ppl_candidate","ppl_reference",
                             "delta_flesch_reading_ease","delta_flesch_kincaid","delta_gunning_fog","delta_smog_index"
                         ]].mean(numeric_only=True)
                         st.dataframe(agg.to_frame("mean").round(4))
+
+                        # --- Visualizations ---
+                        st.markdown("### Visualizations")
+                        try:
+                            import pandas as pd  # ensure available in this scope
+                            if plt is None:
+                                st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
+                            else:
+                                # 1) BLEU grouped bar
+                                bleu_cols = ["bleu_1","bleu_2","bleu_3","bleu_4","bleu"]
+                                bleu_vals = [float(agg.get(c, float('nan'))) for c in bleu_cols]
+                                bleu_vals = [0.0 if pd.isna(v) else v for v in bleu_vals]
+                                fig1, ax1 = plt.subplots(figsize=(6, 3.0))
+                                x = list(range(len(bleu_cols))) if np is None else np.arange(len(bleu_cols))
+                                ax1.bar(x, bleu_vals, color="#3b82f6")
+                                ax1.set_xticks(x)
+                                ax1.set_xticklabels([c.upper() for c in bleu_cols])
+                                ax1.set_ylim(0, 1)
+                                ax1.set_ylabel("Score")
+                                ax1.set_title("Mean BLEU Scores")
+                                for xi, v in zip(x, bleu_vals):
+                                    ax1.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+                                # defer rendering; will place in columns
+
+                                # 1b) ROUGE (F1) grouped bar
+                                rouge_cols = ["rouge1_f1","rouge2_f1","rougeL_f1"]
+                                rouge_labels = ["ROUGE-1 F1","ROUGE-2 F1","ROUGE-L F1"]
+                                rouge_vals = [float(agg.get(c, float('nan'))) for c in rouge_cols]
+                                rouge_vals = [0.0 if pd.isna(v) else v for v in rouge_vals]
+                                fig1b, ax1b = plt.subplots(figsize=(6, 3.0))
+                                x1b = list(range(len(rouge_cols))) if np is None else np.arange(len(rouge_cols))
+                                ax1b.bar(x1b, rouge_vals, color="#06b6d4")
+                                ax1b.set_xticks(x1b)
+                                ax1b.set_xticklabels(rouge_labels)
+                                ax1b.set_ylim(0, 1)
+                                ax1b.set_ylabel("F1")
+                                ax1b.set_title("Mean ROUGE (F1)")
+                                for xi, v in zip(x1b, rouge_vals):
+                                    ax1b.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+                                # defer rendering; will place in columns
+
+                                # 2) Perplexity bar
+                                ppl_cols = ["ppl_candidate","ppl_reference"]
+                                ppl_vals = [float(agg.get(c, float('nan'))) for c in ppl_cols]
+                                ppl_vals = [0.0 if pd.isna(v) else v for v in ppl_vals]
+                                fig2, ax2 = plt.subplots(figsize=(5.5, 3.0))
+                                x2 = list(range(len(ppl_cols))) if np is None else np.arange(len(ppl_cols))
+                                ax2.bar(x2, ppl_vals, color=["#10b981", "#f59e0b"])
+                                ax2.set_xticks(x2)
+                                ax2.set_xticklabels([c.replace("ppl_","PPL ").title() for c in ppl_cols])
+                                ax2.set_ylabel("Perplexity (lower is better)")
+                                ax2.set_title("Mean Perplexity")
+                                for xi, v in zip(x2, ppl_vals):
+                                    ax2.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+
+                                # Render 4 charts in two columns (2 charts per column)
+                                cols = st.columns(2)
+                                with cols[0]:
+                                    st.pyplot(fig1, clear_figure=True)   # BLEU
+                                    st.pyplot(fig1b, clear_figure=True)  # ROUGE F1
+                                with cols[1]:
+                                    st.pyplot(fig2, clear_figure=True)   # Perplexity
+
+                                # 3) Readability deltas bar
+                                read_cols = [
+                                    "delta_flesch_reading_ease","delta_flesch_kincaid",
+                                    "delta_gunning_fog","delta_smog_index"
+                                ]
+                                read_labels = ["Δ Flesch Ease","Δ F-K Grade","Δ Gunning Fog","Δ SMOG"]
+                                read_vals = [float(agg.get(c, float('nan'))) for c in read_cols]
+                                read_vals = [0.0 if pd.isna(v) else v for v in read_vals]
+                                fig3, ax3 = plt.subplots(figsize=(6, 3.0))
+                                x3 = list(range(len(read_cols))) if np is None else np.arange(len(read_cols))
+                                ax3.bar(x3, read_vals, color="#8b5cf6")
+                                ax3.set_xticks(x3)
+                                ax3.set_xticklabels(read_labels)
+                                ax3.axhline(0, color="#94a3b8", linewidth=1)
+                                ax3.set_ylabel("Delta (gen - ref)")
+                                ax3.set_title("Mean Readability Deltas")
+                                for xi, v in zip(x3, read_vals):
+                                    ax3.text(xi, v + (0.02 if v >= 0 else -0.02), f"{v:.2f}", ha='center', va='bottom' if v>=0 else 'top', fontsize=8)
+                                # Readability chart stacked below in right column
+                                with cols[1]:
+                                    st.pyplot(fig3, clear_figure=True)
+
+                                # Removed BLEU-1 distribution histogram as requested
+                        except Exception as viz_e:
+                            st.info(f"Could not render charts: {viz_e}")
                 
 
 # Simplified sidebar with essential information
@@ -1475,12 +1628,18 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
         # Early return pattern – don't render summarization UI when not authenticated
         st.stop()
         
-    st.subheader("Summarize with T5 Optimization")
+    st.subheader("Summarize with Fine-tuned Model")
     
     col1, col2 = st.columns(2)
 
     with col1:
         input_type = st.radio("Choose input type:", ["Plain Text", "PDF File"], key="ft_input_type")
+        model_choice = st.selectbox(
+            "Model",
+            options=["T5-small", "BART-base"],
+            index=0,
+            key="ft_model_choice"
+        )
         summary_length = st.selectbox(
             "Summary Length",
             options=["short", "medium", "long"],
@@ -1490,7 +1649,7 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
 
     with col2:
         st.write("Instructions:")
-        st.markdown("- Paste text or upload a PDF.\n- Choose a summary length.\n- Click 'Generate Summary'.\n- Provide a reference summary (optional) to calculate BLEU, perplexity, and readability metrics.\n- This tab uses a custom fine-tuned T5 model specifically trained for high-quality summarization.")
+        st.markdown("- Paste text or upload a PDF.\n- Choose a model (T5-small or BART-base) and summary length.\n- Click 'Generate Summary'.\n- This tab uses local fine-tuned models stored in your workspace.")
 
     text_input = ""
     pdf_file = None
@@ -1500,8 +1659,7 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
     else:
         pdf_file = st.file_uploader("Upload a PDF", type=["pdf"], key="ft_pdf_file")
 
-    # Reference summary input for metrics evaluation (optional)
-    reference_input = st.text_area("Reference Summary (optional for metrics evaluation)", height=150, key="ft_reference_input", help="Paste a human-written or gold summary here to compute ROUGE, BLEU, perplexity, and readability metrics.")
+    # Reference summary removed for this tab per request
 
     # Initialize session state for last summary
     if 'ft_last_summary' not in st.session_state:
@@ -1514,12 +1672,13 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
         if (input_type == "Plain Text" and not text_input.strip()) or (input_type == "PDF File" and not pdf_file):
             st.error("Please provide text or upload a PDF.")
         else:
-            with st.spinner("Generating summary with fine-tuned T5 model..."):
+            with st.spinner("Generating summary with selected fine-tuned model..."):
                 # Include user email if available for history tracking
                 form_data = {
                     "summary_length": summary_length,
                     "input_type": "pdf" if input_type == "PDF File" else "text",
-                    "text_input": text_input
+                    "text_input": text_input,
+                    "model_choice": ("t5" if model_choice == "T5-small" else "bart"),
                 }
                 # Add user email for history if present in session
                 if st.session_state.get("user_email"):
@@ -1540,7 +1699,7 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                     if "error" in result:
                         st.error(result["error"])
                     else:
-                        st.success("Summary generated successfully with fine-tuned T5 model!")
+                        st.success(f"Summary generated successfully with {model_choice} model!")
 
                         # Prepare original text for side-by-side view
                         original_text_display = ""
@@ -1577,244 +1736,305 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
 
                         summary_text_display = result["summary"].strip()
 
-                        def _word_count(t: str) -> int:
-                            return len([w for w in re.findall(r"\w+", t)]) if t else 0
+                        # Persist to history (original + result) for fine-tuned summarization
+                        try:
+                            email = st.session_state.get("user_email") or (st.session_state.get("me") or {}).get("email")
+                            original_for_history = original_text_display or (text_input.strip() if input_type == "Plain Text" else "")
+                            if email and original_for_history and summary_text_display:
+                                hist_payload = {
+                                    "email": email,
+                                    "type": "summary",
+                                    "original_text": original_for_history,
+                                    "result_text": summary_text_display,
+                                    "model": f"fine-tuned-{('t5' if model_choice == 'T5-small' else 'bart')}",
+                                    "parameters": json.dumps({"summary_length": summary_length}),
+                                }
+                                requests.post(f"{BACKEND_URL}/history", json=hist_payload, timeout=15)
+                        except Exception:
+                            pass
 
-                        wc_orig = _word_count(original_text_display)
-                        wc_sum = _word_count(summary_text_display)
-                        compression = (1 - (wc_sum / wc_orig)) * 100 if wc_orig > 0 else 0
-
-                        col_orig, col_sum = st.columns(2)
-                        with col_orig:
-                            st.markdown("#### Original Text")
-                            st.caption(f"{wc_orig} words")
-                            st.text_area(label="Original", value=original_text_display[:15000], height=260, key="ft_orig_view")
-                        with col_sum:
-                            st.markdown("#### Summary (Fine-tuned T5)")
-                            st.caption(f"{wc_sum} words")
-                            st.text_area(label="Summary", value=summary_text_display, height=260, key="ft_sum_view")
-                            # Quick metrics row
-                            metric_cols = st.columns(2)
-                            with metric_cols[0]:
-                                if wc_orig > 0:
-                                    st.markdown(f"**Compression:** {compression:.0f}%")
-                                else:
-                                    st.markdown("**Compression:** n/a")
-                            with metric_cols[1]:
-                                # Placeholder for ROUGE F1 after evaluation (updated later)
-                                st.markdown("**ROUGE F1:** _evaluate to view_")
-
-                        # Feature description and model information
-                        with st.container():
-                            st.markdown("<div style='margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f1f5f9'>" \
-                                        "<strong>Fine-tuned T5 Summarization Model</strong><ul style='margin-top:6px;'>" \
-                                        "<li>Custom T5-small model fine-tuned on a specialized dataset</li>" \
-                                        "<li>Optimized for high-quality, contextually relevant summaries</li>" \
-                                        "<li>Enhanced beam search configuration for better outputs</li>" \
-                                        "<li>Comprehensive metrics: ROUGE, BLEU, Perplexity, and Readability</li>" \
-                                        "<li>Efficient processing of longer texts through chunking</li>" \
-                                        "<li>Improved coherence and factual accuracy in generated summaries</li>" \
-                                        "</ul></div>", unsafe_allow_html=True)
-                        
+                        # Persist core data for later (including language toggle use)
                         st.session_state['ft_last_summary'] = result["summary"]
                         st.session_state['ft_last_length'] = summary_length
+                        st.session_state['ft_last_original'] = original_text_display
+                        st.session_state['ft_last_model'] = model_choice
 
-                        # Auto-evaluate if reference provided up front
-                        if reference_input.strip():
-                            with st.spinner("Evaluating ROUGE metrics..."):
-                                try:
-                                    rouge_payload = {
-                                        "reference": reference_input.strip(),
-                                        "candidate": result["summary"]
-                                    }
-                                    rouge_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=rouge_payload, timeout=120)
-                                    rouge_json = rouge_resp.json()
-                                    if 'scores' in rouge_json:
-                                        st.markdown("### ROUGE Evaluation")
-                                        scores = rouge_json['scores']
+                        # Clear any stale translations for a new result
+                        st.session_state.pop('ft_original_hi', None)
+                        st.session_state.pop('ft_summary_hi', None)
+                        st.session_state.pop('ft_translation_hash', None)
+
+                        # Immediately render (English) with toggle support
+                        st.session_state['ft_language'] = 'English'
+
+                        # Helper functions for language toggle / translation
+                        def _render_ft_summary_block():
+                            """Render fine-tuned summary with independent language toggles for Original and Summary."""
+                            orig_en = st.session_state.get('ft_last_original', '') or ''
+                            sum_en = st.session_state.get('ft_last_summary', '') or ''
+                            model_used = st.session_state.get('ft_last_model', model_choice)
+                            import hashlib, re as _re2
+                            base_hash = hashlib.sha1((orig_en + '\n' + sum_en).encode('utf-8', errors='ignore')).hexdigest()
+                            # Initialize toggle states
+                            if 'ft_language_original' not in st.session_state:
+                                st.session_state['ft_language_original'] = 'English'
+                            if 'ft_language_summary' not in st.session_state:
+                                st.session_state['ft_language_summary'] = 'English'
+
+                            col_tog1, col_tog2 = st.columns(2)
+                            with col_tog1:
+                                st.session_state['ft_language_original'] = st.radio("Original Text Language", ["English", "हिंदी"], horizontal=True, key="ft_lang_orig_toggle")
+                            with col_tog2:
+                                st.session_state['ft_language_summary'] = st.radio("Summary Language", ["English", "हिंदी"], horizontal=True, key="ft_lang_sum_toggle")
+
+                            need_hi = any(lang == 'हिंदी' for lang in [st.session_state['ft_language_original'], st.session_state['ft_language_summary']])
+                            if need_hi:
+                                # Invalidate cached translations if underlying text changed
+                                if st.session_state.get('ft_translation_hash') != base_hash:
+                                    st.session_state.pop('ft_original_hi', None)
+                                    st.session_state.pop('ft_summary_hi', None)
+                                if ('ft_original_hi' not in st.session_state and st.session_state['ft_language_original'] == 'हिंदी') or \
+                                   ('ft_summary_hi' not in st.session_state and st.session_state['ft_language_summary'] == 'हिंदी'):
+                                    with st.spinner('Translating (may download models first time)...'):
                                         try:
-                                            import pandas as pd
-                                            rows = []
-                                            for metric_name, vals in scores.items():
-                                                rows.append({"Metric": metric_name.upper(), "Precision": vals['precision'], "Recall": vals['recall'], "F1": vals['f1']})
-                                            df = pd.DataFrame(rows)
-                                            st.dataframe(df.style.format({"Precision": "{:.4f}", "Recall": "{:.4f}", "F1": "{:.4f}"}))
+                                            @st.cache_resource(show_spinner=False)
+                                            def _get_translator(src: str, tgt: str):
+                                                from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+                                                import torch
+                                                model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
+                                                tok = AutoTokenizer.from_pretrained(model_name)
+                                                mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                                                device = 0 if torch.cuda.is_available() else -1
+                                                return tok, mdl, device
+                                            def _translate_long(text: str, src: str, tgt: str) -> str:
+                                                if not text.strip():
+                                                    return ''
+                                                tok, mdl, device = _get_translator(src, tgt)
+                                                import torch, re as _re
+                                                paras = [p.strip() for p in _re.split(r"\n{2,}", text) if p.strip()]
+                                                out_paras = []
+                                                for p in paras:
+                                                    if len(p) > 1200:
+                                                        segs = []
+                                                        sentences = _re.split(r'(?<=[.!?])\s+', p)
+                                                        cur = ''
+                                                        for s in sentences:
+                                                            if len(cur) + len(s) > 800 and cur:
+                                                                segs.append(cur)
+                                                                cur = s
+                                                            else:
+                                                                cur = (cur + ' ' + s).strip()
+                                                        if cur:
+                                                            segs.append(cur)
+                                                    else:
+                                                        segs = [p]
+                                                    seg_outs = []
+                                                    for seg in segs:
+                                                        batch = tok(seg, return_tensors='pt', truncation=True, max_length=512)
+                                                        if device >= 0:
+                                                            batch = {k: v.to(device) for k, v in batch.items()}
+                                                            mdl.to(device)
+                                                        gen = mdl.generate(**batch, max_length=512, num_beams=4)
+                                                        seg_outs.append(tok.decode(gen[0], skip_special_tokens=True))
+                                                    out_paras.append(' '.join(seg_outs))
+                                                return '\n\n'.join(out_paras)
+                                            if st.session_state['ft_language_original'] == 'हिंदी' and 'ft_original_hi' not in st.session_state:
+                                                st.session_state['ft_original_hi'] = _translate_long(orig_en, 'en', 'hi')
+                                            if st.session_state['ft_language_summary'] == 'हिंदी' and 'ft_summary_hi' not in st.session_state:
+                                                st.session_state['ft_summary_hi'] = _translate_long(sum_en, 'en', 'hi')
+                                            st.session_state['ft_translation_hash'] = base_hash
+                                        except Exception as te:
+                                            st.warning(f"Hindi translation failed: {te}")
+                                            if 'ft_original_hi' not in st.session_state:
+                                                st.session_state['ft_original_hi'] = orig_en
+                                            if 'ft_summary_hi' not in st.session_state:
+                                                st.session_state['ft_summary_hi'] = sum_en
 
-                                            if plt is None:
-                                                st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
-                                            else:
-                                                # Grouped precision/recall/F1 chart
-                                                fig2, ax2 = plt.subplots(figsize=(6, 3.2))
-                                                metrics_order = list(scores.keys())
-                                                x = np.arange(len(metrics_order)) if np is not None else list(range(len(metrics_order)))
-                                                width = 0.25
-                                                precisions = [scores[m]['precision'] for m in metrics_order]
-                                                recalls = [scores[m]['recall'] for m in metrics_order]
-                                                f1s = [scores[m]['f1'] for m in metrics_order]
-                                                if np is not None:
-                                                    ax2.bar(x - width, precisions, width, label='Precision', color='#3b82f6')
-                                                    ax2.bar(x, recalls, width, label='Recall', color='#10b981')
-                                                    ax2.bar(x + width, f1s, width, label='F1', color='#f59e0b')
-                                                    ax2.set_xticks(x)
-                                                    ax2.set_xticklabels([m.upper() for m in metrics_order])
-                                                else:
-                                                    # Fallback without numpy (less precise spacing)
-                                                    positions = []
-                                                    for i in range(len(metrics_order)):
-                                                        base = i * 3 * width
-                                                        positions.append(base)
-                                                        ax2.bar(base, precisions[i], width, label='Precision' if i == 0 else '', color='#3b82f6')
-                                                        ax2.bar(base + width, recalls[i], width, label='Recall' if i == 0 else '', color='#10b981')
-                                                        ax2.bar(base + 2*width, f1s[i], width, label='F1' if i == 0 else '', color='#f59e0b')
-                                                    ax2.set_xticks([p + width for p in positions])
-                                                    ax2.set_xticklabels([m.upper() for m in metrics_order])
-                                                ax2.set_ylim(0, 1)
-                                                ax2.set_ylabel('Score')
-                            
-                                                ax2.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.15))
-                                                st.pyplot(fig2, clear_figure=True)
+                            orig_display = st.session_state.get('ft_original_hi') if st.session_state['ft_language_original'] == 'हिंदी' else orig_en
+                            sum_display = st.session_state.get('ft_summary_hi') if st.session_state['ft_language_summary'] == 'हिंदी' else sum_en
 
-                                                st.caption(f"Reference tokens: {rouge_json.get('reference_tokens')} | Candidate tokens: {rouge_json.get('candidate_tokens')}")
+                            def _wc(t: str) -> int:
+                                return len([w for w in _re2.findall(r"\w+", t)]) if t else 0
+                            wc_orig_en = _wc(orig_en)
+                            wc_sum_en = _wc(sum_en)
+                            compression = (1 - (wc_sum_en / wc_orig_en)) * 100 if wc_orig_en > 0 else 0
 
-                                                # --- Auto-save ROUGE scores to CSV ---
-                                                try:
-                                                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                                                    csv_filename = os.path.join(ROUGE_OUTPUT_DIR, f"rouge_scores_{ts}.csv")
-                                                    # Write a header + rows for each metric
-                                                    with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
-                                                        writer = csv.writer(f)
-                                                        writer.writerow(["metric", "precision", "recall", "f1", "reference_tokens", "candidate_tokens", "model", "summary_length"])
-                                                        ref_tok = rouge_json.get('reference_tokens')
-                                                        cand_tok = rouge_json.get('candidate_tokens')
-                                                        for metric_name, vals in scores.items():
-                                                            writer.writerow([
-                                                                metric_name,
-                                                                vals['precision'],
-                                                                vals['recall'],
-                                                                vals['f1'],
-                                                                ref_tok,
-                                                                cand_tok,
-                                                                "fine-tuned-t5",
-                                                                st.session_state.get('ft_last_length')
-                                                            ])
-                                                    st.info(f"ROUGE scores saved to {csv_filename}")
-                                                except Exception as file_e:
-                                                    st.warning(f"Could not save ROUGE CSV: {file_e}")
-                                        except Exception as viz_e:
-                                            st.warning(f"ROUGE computed, but visualization failed: {viz_e}")
-                                    else:
-                                        st.warning("ROUGE evaluation response did not contain scores.")
-                                except Exception as er:
-                                    st.error(f"ROUGE evaluation failed: {er}")
+                            col_orig, col_sum = st.columns(2)
+                            with col_orig:
+                                st.markdown("#### Original Text" + (" (हिंदी)" if st.session_state['ft_language_original'] == 'हिंदी' else ""))
+                                cap_o = f"{_wc(orig_display)} words"
+                                if st.session_state['ft_language_original'] == 'हिंदी':
+                                    cap_o += f" • EN: {wc_orig_en}"
+                                st.caption(cap_o)
+                                st.text_area(label="Original", value=(orig_display or '')[:15000], height=260, key="ft_orig_view")
+                            with col_sum:
+                                st.markdown(f"#### Summary ({model_used})" + (" (हिंदी)" if st.session_state['ft_language_summary'] == 'हिंदी' else ""))
+                                cap_s = f"{_wc(sum_display)} words"
+                                if st.session_state['ft_language_summary'] == 'हिंदी':
+                                    cap_s += f" • EN: {wc_sum_en}"
+                                st.caption(cap_s)
+                                st.text_area(label="Summary", value=sum_display or '', height=260, key="ft_sum_view")
+                                if wc_orig_en > 0:
+                                    st.markdown(f"**Compression (English baseline):** {compression:.0f}%")
+                                else:
+                                    st.markdown("**Compression:** n/a")
 
-                                # Calculate additional metrics (BLEU, perplexity, readability delta)
-                                with st.spinner("Calculating additional metrics..."):
-                                    try:
-                                        metrics_payload = {
-                                            "reference": reference_input.strip(),
-                                            "candidate": result["summary"],
-                                            "original_text": original_text_display if original_text_display else None
-                                        }
-                                        
-                                        metrics_resp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
-                                        metrics_json = metrics_resp.json()
-                                        
-                                        # Debug: Collapsible raw response
-                                        with st.expander("Debug: Raw metrics API response", expanded=False):
-                                            st.json(metrics_json)
-                                        
-                                        if "error" not in metrics_json:
-                                            st.markdown("### Additional Quality Metrics")
-                                            
-                                            # BLEU scores
-                                            if "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" not in metrics_json["bleu"]:
-                                                bleu_scores = metrics_json["bleu"]
-                                                st.markdown("#### BLEU Scores")
-                                                bleu_cols = st.columns(5)
-                                                
-                                                with bleu_cols[0]:
-                                                    st.metric("BLEU-1", f"{bleu_scores['bleu_1']:.4f}")
-                                                with bleu_cols[1]:
-                                                    st.metric("BLEU-2", f"{bleu_scores['bleu_2']:.4f}")
-                                                with bleu_cols[2]:
-                                                    st.metric("BLEU-3", f"{bleu_scores['bleu_3']:.4f}")
-                                                with bleu_cols[3]:
-                                                    st.metric("BLEU-4", f"{bleu_scores['bleu_4']:.4f}")
-                                                with bleu_cols[4]:
-                                                    st.metric("BLEU", f"{bleu_scores['bleu']:.4f}")
-                                                
-                                                st.caption("BLEU scores measure the similarity between the generated summary and the reference. Higher scores (0-1) indicate better matches.")
-                                            elif "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" in metrics_json["bleu"]:
-                                                st.info(f"BLEU unavailable: {metrics_json['bleu']['error']}")
-                                            
-                                            # Perplexity
-                                            if "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" not in metrics_json["perplexity"]:
-                                                perplexity = metrics_json["perplexity"]["perplexity"]
-                                                ngram = metrics_json["perplexity"]["ngram"]
-                                                st.markdown("#### Perplexity")
-                                                st.metric("Perplexity", f"{perplexity:.2f}")
-                                                st.caption(f"Perplexity measures how 'surprised' the model is by the text. Lower values indicate more fluent text. (Using {ngram}-gram model)")
-                                            elif "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" in metrics_json["perplexity"]:
-                                                st.info(f"Perplexity unavailable: {metrics_json['perplexity']['error']}")
-                                            
-                                            # Readability delta
-                                            if "readability" in metrics_json and "error" not in metrics_json["readability"] and metrics_json["readability"].get("delta"):
-                                                delta = metrics_json["readability"]["delta"]
-                                                original = metrics_json["readability"]["original"]
-                                                summary = metrics_json["readability"]["summary"]
-                                                
-                                                st.markdown("#### Readability Metrics")
-                                                
-                                                import pandas as pd
-                                                
-                                                # Create a dataframe with selected readability metrics (first 4 only)
-                                                metrics_df = pd.DataFrame({
-                                                    "Metric": [
-                                                        "Flesch Reading Ease",
-                                                        "Flesch-Kincaid Grade",
-                                                        "Gunning Fog",
-                                                        "SMOG Index",
-                                                    ],
-                                                    "Original": [
-                                                        original["flesch_reading_ease"],
-                                                        original["flesch_kincaid_grade"],
-                                                        original["gunning_fog"],
-                                                        original["smog_index"],
-                                                    ],
-                                                    "Summary": [
-                                                        summary["flesch_reading_ease"],
-                                                        summary["flesch_kincaid_grade"],
-                                                        summary["gunning_fog"],
-                                                        summary["smog_index"],
-                                                    ],
-                                                    "Delta": [
-                                                        delta["flesch_reading_ease"],
-                                                        delta["flesch_kincaid_grade"],
-                                                        delta["gunning_fog"],
-                                                        delta["smog_index"],
-                                                    ]
-                                                })
-                                                
-                                                # Format the delta column with a + sign for positive values
-                                                metrics_df["Delta"] = metrics_df["Delta"].apply(lambda x: f"+{x:.2f}" if x > 0 else f"{x:.2f}")
-                                                
-                                                # Display the dataframe
-                                                st.dataframe(
-                                                    metrics_df,
-                                                    column_config={
-                                                        "Original": st.column_config.NumberColumn(format="%.2f"),
-                                                        "Summary": st.column_config.NumberColumn(format="%.2f")
-                                                    }
-                                                )
-                
-                                                st.caption("Readability metrics compare the complexity of the original text vs. the summary. For Flesch Reading Ease, higher scores mean easier readability. For all others, lower scores indicate easier readability.")
-                                        else:
-                                            st.warning(f"Failed to calculate additional metrics: {metrics_json.get('error', 'Unknown error')}")
-                                    except Exception as metrics_err:
-                                        st.warning(f"Failed to calculate additional metrics: {metrics_err}")
+                            with st.container():
+                                if model_used == "T5-small":
+                                    st.markdown("<div style='margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f1f5f9'" \
+                                                "<strong>Fine-tuned T5 Summarization Model</strong><ul style='margin-top:6px;'>" \
+                                                "<li>Custom T5-small model fine-tuned on a specialized dataset</li>" \
+                                                "<li>Optimized for high-quality, contextually relevant summaries</li>" \
+                                                "<li>Enhanced beam search configuration for better outputs</li>" \
+                                                "<li>Comprehensive metrics: ROUGE, BLEU, Perplexity, and Readability</li>" \
+                                                "<li>Efficient processing of longer texts through chunking</li>" \
+                                                "<li>Improved coherence and factual accuracy in generated summaries</li>" \
+                                                "</ul></div>", unsafe_allow_html=True)
+                                else:
+                                    st.markdown("<div style='margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f1f5f9'" \
+                                                "<strong>Fine-tuned BART Summarization Model</strong><ul style='margin-top:6px;'>" \
+                                                "<li>Local BART model loaded from fine_tuned_bart_summarizer/</li>" \
+                                                "<li>Strong performance on abstractive summarization</li>" \
+                                                "<li>Beam search decoding tuned for coherent outputs</li>" \
+                                                "<li>Comprehensive metrics: ROUGE, BLEU, Perplexity, and Readability</li>" \
+                                                "<li>Handles longer inputs via chunking</li>" \
+                                                "</ul></div>", unsafe_allow_html=True)
+
+                        _render_ft_summary_block()
+
+                        # Reference-based evaluation removed for this tab
 
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
+
+    # Persistent display (after first generation) allowing language toggle
+    if st.session_state.get('ft_last_summary') and not generate_clicked:
+        # Reuse the same render helper if defined (first run) else define a thin wrapper
+        def _render_ft_summary_block_external():
+            # External persistent renderer with independent toggles
+            orig_en = st.session_state.get('ft_last_original', '') or ''
+            sum_en = st.session_state.get('ft_last_summary', '') or ''
+            model_used = st.session_state.get('ft_last_model', 'Model')
+            import hashlib, re as _re2
+            base_hash = hashlib.sha1((orig_en + '\n' + sum_en).encode('utf-8', errors='ignore')).hexdigest()
+            if 'ft_language_original' not in st.session_state:
+                st.session_state['ft_language_original'] = 'English'
+            if 'ft_language_summary' not in st.session_state:
+                st.session_state['ft_language_summary'] = 'English'
+            col_tog1, col_tog2 = st.columns(2)
+            with col_tog1:
+                st.session_state['ft_language_original'] = st.radio("Original Text Language", ["English", "हिंदी"], horizontal=True, key="ft_lang_orig_toggle")
+            with col_tog2:
+                st.session_state['ft_language_summary'] = st.radio("Summary Language", ["English", "हिंदी"], horizontal=True, key="ft_lang_sum_toggle")
+            need_hi = any(lang == 'हिंदी' for lang in [st.session_state['ft_language_original'], st.session_state['ft_language_summary']])
+            if need_hi:
+                if st.session_state.get('ft_translation_hash') != base_hash:
+                    st.session_state.pop('ft_original_hi', None)
+                    st.session_state.pop('ft_summary_hi', None)
+                if ('ft_original_hi' not in st.session_state and st.session_state['ft_language_original'] == 'हिंदी') or \
+                   ('ft_summary_hi' not in st.session_state and st.session_state['ft_language_summary'] == 'हिंदी'):
+                    with st.spinner('Translating (may download models first time)...'):
+                        try:
+                            @st.cache_resource(show_spinner=False)
+                            def _get_translator(src: str, tgt: str):
+                                from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+                                import torch
+                                model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
+                                tok = AutoTokenizer.from_pretrained(model_name)
+                                mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                                device = 0 if torch.cuda.is_available() else -1
+                                return tok, mdl, device
+                            def _translate_long(text: str, src: str, tgt: str) -> str:
+                                if not text.strip():
+                                    return ''
+                                tok, mdl, device = _get_translator(src, tgt)
+                                import torch, re as _re
+                                paras = [p.strip() for p in _re.split(r"\n{2,}", text) if p.strip()]
+                                out_paras = []
+                                for p in paras:
+                                    if len(p) > 1200:
+                                        segs = []
+                                        sentences = _re.split(r'(?<=[.!?])\s+', p)
+                                        cur = ''
+                                        for s in sentences:
+                                            if len(cur) + len(s) > 800 and cur:
+                                                segs.append(cur)
+                                                cur = s
+                                            else:
+                                                cur = (cur + ' ' + s).strip()
+                                        if cur:
+                                            segs.append(cur)
+                                    else:
+                                        segs = [p]
+                                    seg_outs = []
+                                    for seg in segs:
+                                        batch = tok(seg, return_tensors='pt', truncation=True, max_length=512)
+                                        if device >= 0:
+                                            batch = {k: v.to(device) for k, v in batch.items()}
+                                            mdl.to(device)
+                                        gen = mdl.generate(**batch, max_length=512, num_beams=4)
+                                        seg_outs.append(tok.decode(gen[0], skip_special_tokens=True))
+                                    out_paras.append(' '.join(seg_outs))
+                                return '\n\n'.join(out_paras)
+                            if st.session_state['ft_language_original'] == 'हिंदी' and 'ft_original_hi' not in st.session_state:
+                                st.session_state['ft_original_hi'] = _translate_long(orig_en, 'en', 'hi')
+                            if st.session_state['ft_language_summary'] == 'हिंदी' and 'ft_summary_hi' not in st.session_state:
+                                st.session_state['ft_summary_hi'] = _translate_long(sum_en, 'en', 'hi')
+                            st.session_state['ft_translation_hash'] = base_hash
+                        except Exception as te:
+                            st.warning(f"Hindi translation failed: {te}")
+                            if 'ft_original_hi' not in st.session_state:
+                                st.session_state['ft_original_hi'] = orig_en
+                            if 'ft_summary_hi' not in st.session_state:
+                                st.session_state['ft_summary_hi'] = sum_en
+            orig_display = st.session_state.get('ft_original_hi') if st.session_state['ft_language_original'] == 'हिंदी' else orig_en
+            sum_display = st.session_state.get('ft_summary_hi') if st.session_state['ft_language_summary'] == 'हिंदी' else sum_en
+            def _wc(t: str) -> int:
+                return len([w for w in _re2.findall(r"\w+", t)]) if t else 0
+            wc_orig_en = _wc(orig_en)
+            wc_sum_en = _wc(sum_en)
+            compression = (1 - (wc_sum_en / wc_orig_en)) * 100 if wc_orig_en > 0 else 0
+            col_orig, col_sum = st.columns(2)
+            with col_orig:
+                st.markdown("#### Original Text" + (" (हिंदी)" if st.session_state['ft_language_original'] == 'हिंदी' else ""))
+                cap_o = f"{_wc(orig_display)} words"
+                if st.session_state['ft_language_original'] == 'हिंदी':
+                    cap_o += f" • EN: {wc_orig_en}"
+                st.caption(cap_o)
+                st.text_area(label="Original", value=(orig_display or '')[:15000], height=260, key="ft_orig_view")
+            with col_sum:
+                st.markdown(f"#### Summary ({model_used})" + (" (हिंदी)" if st.session_state['ft_language_summary'] == 'हिंदी' else ""))
+                cap_s = f"{_wc(sum_display)} words"
+                if st.session_state['ft_language_summary'] == 'हिंदी':
+                    cap_s += f" • EN: {wc_sum_en}"
+                st.caption(cap_s)
+                st.text_area(label="Summary", value=sum_display or '', height=260, key="ft_sum_view")
+                if wc_orig_en > 0:
+                    st.markdown(f"**Compression (English baseline):** {compression:.0f}%")
+                else:
+                    st.markdown("**Compression:** n/a")
+            with st.container():
+                if model_used == "T5-small":
+                    st.markdown("<div style='margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f1f5f9'" \
+                                "<strong>Fine-tuned T5 Summarization Model</strong><ul style='margin-top:6px;'>" \
+                                "<li>Custom T5-small model fine-tuned on a specialized dataset</li>" \
+                                "<li>Optimized for high-quality, contextually relevant summaries</li>" \
+                                "<li>Enhanced beam search configuration for better outputs</li>" \
+                                "<li>Comprehensive metrics: ROUGE, BLEU, Perplexity, and Readability</li>" \
+                                "<li>Efficient processing of longer texts through chunking</li>" \
+                                "<li>Improved coherence and factual accuracy in generated summaries</li>" \
+                                "</ul></div>", unsafe_allow_html=True)
+                else:
+                    st.markdown("<div style='margin-top:14px;padding:14px;border:1px solid #e2e8f0;border-radius:8px;background:#f1f5f9'" \
+                                "<strong>Fine-tuned BART Summarization Model</strong><ul style='margin-top:6px;'>" \
+                                "<li>Local BART model loaded from fine_tuned_bart_summarizer/</li>" \
+                                "<li>Strong performance on abstractive summarization</li>" \
+                                "<li>Beam search decoding tuned for coherent outputs</li>" \
+                                "<li>Comprehensive metrics: ROUGE, BLEU, Perplexity, and Readability</li>" \
+                                "<li>Handles longer inputs via chunking</li>" \
+                                "</ul></div>", unsafe_allow_html=True)
+
+        _render_ft_summary_block_external()
 
 
 # -------------------- History Tab --------------------
@@ -1867,16 +2087,30 @@ with tabs[8]:  # Tab 8 - History
             if "entries" in history_data and history_data["entries"]:
                 for entry in history_data["entries"]:
                     entry_type = entry["type"].capitalize()
-                    # Parse timestamp flexibly (with or without microseconds / timezone)
-                    created_raw = entry.get("created_at") or ""
+                    # Parse timestamp as UTC, then convert to local timezone for display
+                    created_raw = (entry.get("created_at") or "").strip()
+                    dt = None
+                    # Try ISO 8601 parse first
                     try:
-                        created_date = datetime.strptime(created_raw, "%Y-%m-%dT%H:%M:%S.%f")
+                        iso = created_raw.replace("Z", "+00:00")
+                        dt = datetime.fromisoformat(iso)
                     except Exception:
-                        try:
-                            created_date = datetime.strptime(created_raw, "%Y-%m-%d %H:%M:%S")
-                        except Exception:
-                            created_date = datetime.utcnow()
-                    formatted_date = created_date.strftime("%B %d, %Y at %H:%M %p")
+                        pass
+                    if dt is None:
+                        # Fallbacks for common formats (naive, treat as UTC)
+                        for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                            try:
+                                dt = datetime.strptime(created_raw, fmt)
+                                break
+                            except Exception:
+                                continue
+                    if dt is None:
+                        dt = datetime.utcnow().replace(tzinfo=timezone.utc)
+                    # Assume UTC when tzinfo missing
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    local_dt = dt.astimezone()  # convert to local timezone
+                    formatted_date = local_dt.strftime("%B %d, %Y at %I:%M %p")
                     
                     # Create an expandable section for each entry
                     with st.expander(f"{entry_type} on {formatted_date}", expanded=False):
@@ -1937,21 +2171,26 @@ with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
         )
         st.stop()
 
-    st.subheader("Paraphrase with Fine-tuned T5 (Local Files)")
+    st.subheader("Paraphrase with Fine-tuned Model (Local Files)")
 
-    # Resolve the saved model directory relative to this file
-    MODEL_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "saved_paraphrasing_model"))
+    # Define available local model folders
+    T5_PARAPHRASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "saved_paraphrasing_model"))
+    BART_PARAPHRASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bart_paraphrasing_model"))
+
+    # Model selection and resolve selected directory
+    model_choice = st.selectbox("Model", ["T5-small", "BART-base"], index=0, key="ftp_model_choice")
+    MODEL_DIR = T5_PARAPHRASE_DIR if model_choice == "T5-small" else BART_PARAPHRASE_DIR
 
     if not os.path.isdir(MODEL_DIR):
         st.error(
-            f"Could not find the saved paraphrasing model directory at '{MODEL_DIR}'. "
-            "Please ensure the folder exists and contains the tokenizer/model files."
+            f"Could not find the selected paraphrasing model folder for {model_choice} at '{MODEL_DIR}'. "
+            "Please ensure the directory exists and includes the tokenizer/model files."
         )
         st.stop()
 
     @st.cache_resource(show_spinner=False)
     def _load_finetuned_paraphraser(model_path: str):
-        """Load T5-small paraphrasing model and tokenizer from local folder.
+        """Load a local Seq2Seq paraphrasing model (T5-small or BART-base) with its tokenizer.
 
         Returns (tokenizer, model, device_str).
         """
@@ -2017,11 +2256,16 @@ with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
         repetition_penalty: float | None = None,
         length_penalty: float | None = None,
         instruction: str | None = None,
+        model_path: str | None = None,
     ) -> list[str]:
-        tok, model, device = _load_finetuned_paraphraser(MODEL_DIR)
+        # Allow caller to override which local model folder to use; default to the Tab 10 selection
+        use_model_dir = model_path or MODEL_DIR
+        tok, model, device = _load_finetuned_paraphraser(use_model_dir)
 
-        # Prepare inputs with T5 paraphrase prefix
-        prefix = "paraphrase: "
+        # Prepare inputs; apply T5 paraphrase prefix only for T5 models
+        model_type = getattr(getattr(model, "config", None), "model_type", "")
+        is_t5 = str(model_type).lower() == "t5"
+        prefix = "paraphrase: " if is_t5 else ""
         extra = f" {instruction.strip()}" if instruction else ""
         input_text = prefix + text + extra
         enc = tok([input_text], return_tensors="pt", truncation=True)
@@ -2037,14 +2281,42 @@ with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
         if not do_sample and num_return_sequences > num_beams:
             num_beams = max(num_beams, num_return_sequences)
 
+        # Length controls
+        max_len = int(max_length)
+        # Set a more permissive min_length so short inputs don't get truncated unnaturally
+        # ~60% of max, at least 4 tokens, and always leave room to stop before max
+        min_len = max(4, min(int(max_len * 0.6), max_len - 8))
+        # Ensure a minimum of new tokens regardless of input length
+        try:
+            min_new = max(6, min(max_len - 2, int(max_len * 0.5)))
+        except Exception:
+            min_new = None
+
         gen_kwargs = dict(
-            max_length=int(max_length),
+            max_length=max_len,
+            min_length=min_len,
             num_return_sequences=int(num_return_sequences),
+            # Anti-repetition for longer outputs
+            no_repeat_ngram_size=3,
+            encoder_no_repeat_ngram_size=3,
+            eos_token_id=getattr(tok, 'eos_token_id', None),
+            pad_token_id=getattr(tok, 'pad_token_id', None),
         )
+        if min_new is not None:
+            gen_kwargs["min_new_tokens"] = int(min_new)
         if do_sample:
-            gen_kwargs.update(dict(do_sample=True, temperature=float(temperature)))
+            gen_kwargs.update(dict(
+                do_sample=True,
+                temperature=float(temperature),
+                early_stopping=True,
+            ))
         else:
-            gen_kwargs.update(dict(num_beams=int(num_beams)))
+            # For beam search, encourage longer outputs and avoid early stopping
+            gen_kwargs.update(dict(
+                num_beams=int(num_beams),
+                length_penalty=float(length_penalty) if length_penalty is not None else 1.1,
+                early_stopping=True,
+            ))
 
         # Optional advanced controls
         if top_p is not None:
@@ -2150,13 +2422,7 @@ with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
         length_penalty = params.get("length_penalty", length_penalty)
         instruction = params.get("instruction", instruction)
 
-    # Optional reference paraphrase for evaluation (ROUGE/BLEU/PPL)
-    reference_para_input = st.text_area(
-        "Reference Paraphrase (optional for metrics evaluation)",
-        height=100,
-        key="ftp_reference_input",
-        help="Paste a gold paraphrase to compute ROUGE, BLEU, perplexity and readability metrics."
-    )
+    # Reference paraphrase input removed for this tab per request
 
     run = st.button("Generate Paraphrases", type="primary")
 
@@ -2191,196 +2457,247 @@ with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
                         instruction=instruction,
                     )
 
-                    # Side-by-side quick view (single output)
-                    st.markdown("### Original vs Paraphrase")
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown("**Original**")
-                        st.text_area("Original Text", value=source_text[:15000], height=180, key="ftp_original_view")
-                    with c2:
-                        st.markdown("**Paraphrase**")
-                        st.text_area("Paraphrase", value=(outs[0] if outs else ""), height=180, key="ftp_first_view")
+                    # Store latest outputs for persistent language toggle
+                    first_paraphrase = (outs[0] if outs else "")
+                    st.session_state['ftp_last_original'] = source_text
+                    st.session_state['ftp_last_paraphrase'] = first_paraphrase
+                    st.session_state['ftp_last_model'] = model_choice
+                    # Reset translations when new paraphrase generated
+                    for k in ['ftp_original_hi','ftp_paraphrase_hi','ftp_translation_hash']:
+                        st.session_state.pop(k, None)
+                    st.session_state['ftp_language'] = 'English'
 
-                    # --- Evaluation (if reference provided) ---
-                    if reference_para_input.strip():
-                        candidate_text = outs[0] if outs else ""
-                        with st.spinner("Evaluating ROUGE metrics..."):
-                            try:
-                                rouge_payload = {
-                                    "reference": reference_para_input.strip(),
-                                    "candidate": candidate_text,
-                                }
-                                rouge_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=rouge_payload, timeout=120)
-                                rouge_json = rouge_resp.json()
-                                if 'scores' in rouge_json:
-                                    st.markdown("### ROUGE Evaluation")
-                                    scores = rouge_json['scores']
+                    def _render_ftp_block():
+                        orig_en = st.session_state.get('ftp_last_original','') or ''
+                        para_en = st.session_state.get('ftp_last_paraphrase','') or ''
+                        import hashlib, re as _re2
+                        base_hash = hashlib.sha1((orig_en+'\n'+para_en).encode('utf-8', errors='ignore')).hexdigest()
+                        if 'ftp_language_original' not in st.session_state:
+                            st.session_state['ftp_language_original'] = 'English'
+                        if 'ftp_language_paraphrase' not in st.session_state:
+                            st.session_state['ftp_language_paraphrase'] = 'English'
+                        col_tog1, col_tog2 = st.columns(2)
+                        with col_tog1:
+                            st.session_state['ftp_language_original'] = st.radio("Original Text Language", ["English","हिंदी"], horizontal=True, key="ftp_lang_orig_toggle")
+                        with col_tog2:
+                            st.session_state['ftp_language_paraphrase'] = st.radio("Paraphrase Language", ["English","हिंदी"], horizontal=True, key="ftp_lang_para_toggle")
+                        need_hi = any(lang == 'हिंदी' for lang in [st.session_state['ftp_language_original'], st.session_state['ftp_language_paraphrase']])
+                        if need_hi:
+                            if st.session_state.get('ftp_translation_hash') != base_hash:
+                                st.session_state.pop('ftp_original_hi', None)
+                                st.session_state.pop('ftp_paraphrase_hi', None)
+                            if ('ftp_original_hi' not in st.session_state and st.session_state['ftp_language_original']=='हिंदी') or \
+                               ('ftp_paraphrase_hi' not in st.session_state and st.session_state['ftp_language_paraphrase']=='हिंदी'):
+                                with st.spinner('Translating (may download models first time)...'):
                                     try:
-                                        import pandas as pd
-                                        rows = []
-                                        for metric_name, vals in scores.items():
-                                            rows.append({"Metric": metric_name.upper(), "Precision": vals['precision'], "Recall": vals['recall'], "F1": vals['f1']})
-                                        df = pd.DataFrame(rows)
-                                        st.dataframe(df.style.format({"Precision": "{:.4f}", "Recall": "{:.4f}", "F1": "{:.4f}"}))
+                                        @st.cache_resource(show_spinner=False)
+                                        def _get_translator(src: str, tgt: str):
+                                            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+                                            import torch
+                                            model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
+                                            tok = AutoTokenizer.from_pretrained(model_name)
+                                            mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                                            device = 0 if torch.cuda.is_available() else -1
+                                            return tok, mdl, device
+                                        def _translate_long(text: str, src: str, tgt: str) -> str:
+                                            if not text.strip():
+                                                return ''
+                                            tok, mdl, device = _get_translator(src, tgt)
+                                            import torch, re as _re
+                                            paras = [p.strip() for p in _re.split(r"\n{2,}", text) if p.strip()]
+                                            out_paras = []
+                                            for p in paras:
+                                                if len(p) > 1200:
+                                                    segs = []
+                                                    sentences = _re.split(r'(?<=[.!?])\s+', p)
+                                                    cur = ''
+                                                    for s in sentences:
+                                                        if len(cur) + len(s) > 800 and cur:
+                                                            segs.append(cur)
+                                                            cur = s
+                                                        else:
+                                                            cur = (cur + ' ' + s).strip()
+                                                    if cur:
+                                                        segs.append(cur)
+                                                else:
+                                                    segs = [p]
+                                                seg_outs = []
+                                                for seg in segs:
+                                                    batch = tok(seg, return_tensors='pt', truncation=True, max_length=512)
+                                                    if device >= 0:
+                                                        batch = {k: v.to(device) for k, v in batch.items()}
+                                                        mdl.to(device)
+                                                    gen = mdl.generate(**batch, max_length=512, num_beams=4)
+                                                    seg_outs.append(tok.decode(gen[0], skip_special_tokens=True))
+                                                out_paras.append(' '.join(seg_outs))
+                                            return '\n\n'.join(out_paras)
+                                        if st.session_state['ftp_language_original']=='हिंदी' and 'ftp_original_hi' not in st.session_state:
+                                            st.session_state['ftp_original_hi'] = _translate_long(orig_en,'en','hi')
+                                        if st.session_state['ftp_language_paraphrase']=='हिंदी' and 'ftp_paraphrase_hi' not in st.session_state:
+                                            st.session_state['ftp_paraphrase_hi'] = _translate_long(para_en,'en','hi')
+                                        st.session_state['ftp_translation_hash'] = base_hash
+                                    except Exception as te:
+                                        st.warning(f"Hindi translation failed: {te}")
+                                        if 'ftp_original_hi' not in st.session_state:
+                                            st.session_state['ftp_original_hi'] = orig_en
+                                        if 'ftp_paraphrase_hi' not in st.session_state:
+                                            st.session_state['ftp_paraphrase_hi'] = para_en
+                        orig_display = st.session_state.get('ftp_original_hi') if st.session_state['ftp_language_original']=='हिंदी' else orig_en
+                        para_display = st.session_state.get('ftp_paraphrase_hi') if st.session_state['ftp_language_paraphrase']=='हिंदी' else para_en
+                        def _wc(t: str) -> int:
+                            return len([w for w in _re2.findall(r"\w+", t)]) if t else 0
+                        wc_orig_en = _wc(orig_en)
+                        wc_para_en = _wc(para_en)
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.markdown("**Original**" + (" (हिंदी)" if st.session_state['ftp_language_original']=='हिंदी' else ""))
+                            cap_o = f"{_wc(orig_display)} words"
+                            if st.session_state['ftp_language_original']=='हिंदी':
+                                cap_o += f" • EN: {wc_orig_en}"
+                            st.caption(cap_o)
+                            st.text_area("Original Text", value=orig_display[:15000], height=180, key="ftp_original_view")
+                        with c2:
+                            st.markdown("**Paraphrase**" + (" (हिंदी)" if st.session_state['ftp_language_paraphrase']=='हिंदी' else ""))
+                            cap_p = f"{_wc(para_display)} words"
+                            if st.session_state['ftp_language_paraphrase']=='हिंदी':
+                                cap_p += f" • EN: {wc_para_en}"
+                            st.caption(cap_p)
+                            st.text_area("Paraphrase", value=para_display, height=180, key="ftp_first_view")
+                    st.markdown("### Original vs Paraphrase")
+                    _render_ftp_block()
 
-                                        if plt is None:
-                                            st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
-                                        else:
-                                            fig2, ax2 = plt.subplots(figsize=(6, 3.2))
-                                            metrics_order = list(scores.keys())
-                                            x = np.arange(len(metrics_order)) if np is not None else list(range(len(metrics_order)))
-                                            width = 0.25
-                                            precisions = [scores[m]['precision'] for m in metrics_order]
-                                            recalls = [scores[m]['recall'] for m in metrics_order]
-                                            f1s = [scores[m]['f1'] for m in metrics_order]
-                                            if np is not None:
-                                                ax2.bar(x - width, precisions, width, label='Precision', color='#3b82f6')
-                                                ax2.bar(x, recalls, width, label='Recall', color='#10b981')
-                                                ax2.bar(x + width, f1s, width, label='F1', color='#f59e0b')
-                                                ax2.set_xticks(x)
-                                                ax2.set_xticklabels([m.upper() for m in metrics_order])
-                                            else:
-                                                positions = []
-                                                for i in range(len(metrics_order)):
-                                                    base = i * 3 * width
-                                                    positions.append(base)
-                                                    ax2.bar(base, precisions[i], width, label='Precision' if i == 0 else '', color='#3b82f6')
-                                                    ax2.bar(base + width, recalls[i], width, label='Recall' if i == 0 else '', color='#10b981')
-                                                    ax2.bar(base + 2*width, f1s[i], width, label='F1' if i == 0 else '', color='#f59e0b')
-                                                ax2.set_xticks([p + width for p in positions])
-                                                ax2.set_xticklabels([m.upper() for m in metrics_order])
-                                            ax2.set_ylim(0, 1)
-                                            ax2.set_ylabel('Score')
-                                            ax2.legend(frameon=False, ncol=3, loc='upper center', bbox_to_anchor=(0.5, 1.15))
-                                            st.pyplot(fig2, clear_figure=True)
+                    # Persist to history (original + result) for fine-tuned paraphrasing
+                    try:
+                        email = st.session_state.get("user_email") or (st.session_state.get("me") or {}).get("email")
+                        if email and source_text and first_paraphrase:
+                            hist_payload = {
+                                "email": email,
+                                "type": "paraphrase",
+                                "original_text": source_text,
+                                "result_text": first_paraphrase,
+                                "model": f"fine-tuned-{('t5' if model_choice == 'T5-small' else 'bart')}",
+                                "parameters": json.dumps({
+                                    "strategy": strategy,
+                                    "complexity": complexity,
+                                    "max_length": max_length,
+                                    "do_sample": do_sample,
+                                    "num_beams": num_beams,
+                                    "temperature": temperature,
+                                    "top_p": top_p,
+                                    "top_k": top_k,
+                                    "repetition_penalty": repetition_penalty,
+                                    "length_penalty": length_penalty,
+                                }),
+                            }
+                            requests.post(f"{BACKEND_URL}/history", json=hist_payload, timeout=15)
+                    except Exception:
+                        pass
 
-                                        st.caption(f"Reference tokens: {rouge_json.get('reference_tokens')} | Candidate tokens: {rouge_json.get('candidate_tokens')}")
-
-                                        # Save ROUGE CSV
-                                        try:
-                                            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                                            csv_filename = os.path.join(ROUGE_OUTPUT_DIR, f"rouge_scores_{ts}.csv")
-                                            with open(csv_filename, 'w', newline='', encoding='utf-8') as f:
-                                                writer = csv.writer(f)
-                                                writer.writerow(["metric", "precision", "recall", "f1", "reference_tokens", "candidate_tokens", "model", "summary_length"])
-                                                ref_tok = rouge_json.get('reference_tokens')
-                                                cand_tok = rouge_json.get('candidate_tokens')
-                                                for metric_name, vals in scores.items():
-                                                    writer.writerow([
-                                                        metric_name,
-                                                        vals['precision'],
-                                                        vals['recall'],
-                                                        vals['f1'],
-                                                        ref_tok,
-                                                        cand_tok,
-                                                        "fine-tuned-paraphrase",
-                                                        max_length,
-                                                    ])
-                                            st.info(f"ROUGE scores saved to {csv_filename}")
-                                        except Exception as file_e:
-                                            st.warning(f"Could not save ROUGE CSV: {file_e}")
-                                    except Exception as viz_e:
-                                        st.warning(f"ROUGE computed, but visualization failed: {viz_e}")
-                                else:
-                                    st.warning("ROUGE evaluation response did not contain scores.")
-                            except Exception as er:
-                                st.error(f"ROUGE evaluation failed: {er}")
-
-                        # Additional metrics (BLEU, Perplexity, Readability)
-                        with st.spinner("Calculating additional metrics..."):
-                            try:
-                                metrics_payload = {
-                                    "reference": reference_para_input.strip(),
-                                    "candidate": candidate_text,
-                                    "original_text": source_text if source_text else None,
-                                }
-                                metrics_resp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
-                                metrics_json = metrics_resp.json()
-
-                                with st.expander("Debug: Raw metrics API response", expanded=False):
-                                    st.json(metrics_json)
-
-                                if "error" not in metrics_json:
-                                    st.markdown("### Additional Quality Metrics")
-
-                                    # BLEU
-                                    if "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" not in metrics_json["bleu"]:
-                                        bleu_scores = metrics_json["bleu"]
-                                        st.markdown("#### BLEU Scores")
-                                        bleu_cols = st.columns(5)
-                                        with bleu_cols[0]:
-                                            st.metric("BLEU-1", f"{bleu_scores['bleu_1']:.4f}")
-                                        with bleu_cols[1]:
-                                            st.metric("BLEU-2", f"{bleu_scores['bleu_2']:.4f}")
-                                        with bleu_cols[2]:
-                                            st.metric("BLEU-3", f"{bleu_scores['bleu_3']:.4f}")
-                                        with bleu_cols[3]:
-                                            st.metric("BLEU-4", f"{bleu_scores['bleu_4']:.4f}")
-                                        with bleu_cols[4]:
-                                            st.metric("BLEU", f"{bleu_scores['bleu']:.4f}")
-                                        st.caption("BLEU scores measure similarity between the generated paraphrase and the reference. Higher is better (0-1).")
-                                    elif "bleu" in metrics_json and isinstance(metrics_json["bleu"], dict) and "error" in metrics_json["bleu"]:
-                                        st.info(f"BLEU unavailable: {metrics_json['bleu']['error']}")
-
-                                    # Perplexity
-                                    if "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" not in metrics_json["perplexity"]:
-                                        ppl = metrics_json["perplexity"].get("perplexity")
-                                        ngram = metrics_json["perplexity"].get("ngram")
-                                        st.markdown("#### Perplexity")
-                                        if ppl is not None:
-                                            st.metric("Perplexity", f"{ppl:.2f}")
-                                            st.caption(f"Lower is better. Using {ngram}-gram model.")
-                                    elif "perplexity" in metrics_json and isinstance(metrics_json["perplexity"], dict) and "error" in metrics_json["perplexity"]:
-                                        st.info(f"Perplexity unavailable: {metrics_json['perplexity']['error']}")
-
-                                    # Readability delta
-                                    if "readability" in metrics_json and "error" not in metrics_json["readability"] and metrics_json["readability"].get("delta"):
-                                        delta = metrics_json["readability"]["delta"]
-                                        original = metrics_json["readability"]["original"]
-                                        summary = metrics_json["readability"]["summary"]
-                                        st.markdown("#### Readability Metrics")
-                                        import pandas as pd
-                                        metrics_df = pd.DataFrame({
-                                            "Metric": [
-                                                "Flesch Reading Ease",
-                                                "Flesch-Kincaid Grade",
-                                                "Gunning Fog",
-                                                "SMOG Index",
-                                            ],
-                                            "Original": [
-                                                original["flesch_reading_ease"],
-                                                original["flesch_kincaid_grade"],
-                                                original["gunning_fog"],
-                                                original["smog_index"],
-                                            ],
-                                            "Paraphrase": [
-                                                summary["flesch_reading_ease"],
-                                                summary["flesch_kincaid_grade"],
-                                                summary["gunning_fog"],
-                                                summary["smog_index"],
-                                            ],
-                                            "Delta": [
-                                                delta["flesch_reading_ease"],
-                                                delta["flesch_kincaid_grade"],
-                                                delta["gunning_fog"],
-                                                delta["smog_index"],
-                                            ],
-                                        })
-                                        metrics_df["Delta"] = metrics_df["Delta"].apply(lambda x: f"+{x:.2f}" if x > 0 else f"{x:.2f}")
-                                        st.dataframe(
-                                            metrics_df,
-                                            column_config={
-                                                "Original": st.column_config.NumberColumn(format="%.2f"),
-                                                "Paraphrase": st.column_config.NumberColumn(format="%.2f"),
-                                            },
-                                        )
-                                    
-                                else:
-                                    st.warning(f"Failed to calculate additional metrics: {metrics_json.get('error', 'Unknown error')}")
-                            except Exception as metrics_err:
-                                st.warning(f"Failed to calculate additional metrics: {metrics_err}")
+                    # Reference-based evaluation removed for this tab
                 except Exception as e:
                     st.error(f"Failed to generate paraphrases: {e}")
+
+    # Persistent display with language toggle after generation (when user toggles without regenerating)
+    if st.session_state.get('ftp_last_paraphrase') and not run:
+        def _render_ftp_block_external():
+            # External persistent renderer with independent toggles
+            orig_en = st.session_state.get('ftp_last_original','') or ''
+            para_en = st.session_state.get('ftp_last_paraphrase','') or ''
+            import hashlib, re as _re2
+            base_hash = hashlib.sha1((orig_en+'\n'+para_en).encode('utf-8', errors='ignore')).hexdigest()
+            if 'ftp_language_original' not in st.session_state:
+                st.session_state['ftp_language_original'] = 'English'
+            if 'ftp_language_paraphrase' not in st.session_state:
+                st.session_state['ftp_language_paraphrase'] = 'English'
+            col_tog1, col_tog2 = st.columns(2)
+            with col_tog1:
+                st.session_state['ftp_language_original'] = st.radio("Original Text Language", ["English","हिंदी"], horizontal=True, key="ftp_lang_orig_toggle")
+            with col_tog2:
+                st.session_state['ftp_language_paraphrase'] = st.radio("Paraphrase Language", ["English","हिंदी"], horizontal=True, key="ftp_lang_para_toggle")
+            need_hi = any(lang == 'हिंदी' for lang in [st.session_state['ftp_language_original'], st.session_state['ftp_language_paraphrase']])
+            if need_hi:
+                if st.session_state.get('ftp_translation_hash') != base_hash:
+                    st.session_state.pop('ftp_original_hi', None)
+                    st.session_state.pop('ftp_paraphrase_hi', None)
+                if ('ftp_original_hi' not in st.session_state and st.session_state['ftp_language_original']=='हिंदी') or \
+                   ('ftp_paraphrase_hi' not in st.session_state and st.session_state['ftp_language_paraphrase']=='हिंदी'):
+                    with st.spinner('Translating (may download models first time)...'):
+                        try:
+                            @st.cache_resource(show_spinner=False)
+                            def _get_translator(src: str, tgt: str):
+                                from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+                                import torch
+                                model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
+                                tok = AutoTokenizer.from_pretrained(model_name)
+                                mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                                device = 0 if torch.cuda.is_available() else -1
+                                return tok, mdl, device
+                            def _translate_long(text: str, src: str, tgt: str) -> str:
+                                if not text.strip():
+                                    return ''
+                                tok, mdl, device = _get_translator(src, tgt)
+                                import torch, re as _re
+                                paras = [p.strip() for p in _re.split(r"\n{2,}", text) if p.strip()]
+                                out_paras = []
+                                for p in paras:
+                                    if len(p) > 1200:
+                                        segs = []
+                                        sentences = _re.split(r'(?<=[.!?])\s+', p)
+                                        cur = ''
+                                        for s in sentences:
+                                            if len(cur) + len(s) > 800 and cur:
+                                                segs.append(cur)
+                                                cur = s
+                                            else:
+                                                cur = (cur + ' ' + s).strip()
+                                        if cur:
+                                            segs.append(cur)
+                                    else:
+                                        segs = [p]
+                                    seg_outs = []
+                                    for seg in segs:
+                                        batch = tok(seg, return_tensors='pt', truncation=True, max_length=512)
+                                        if device >= 0:
+                                            batch = {k: v.to(device) for k, v in batch.items()}
+                                            mdl.to(device)
+                                        gen = mdl.generate(**batch, max_length=512, num_beams=4)
+                                        seg_outs.append(tok.decode(gen[0], skip_special_tokens=True))
+                                    out_paras.append(' '.join(seg_outs))
+                                return '\n\n'.join(out_paras)
+                            if st.session_state['ftp_language_original']=='हिंदी' and 'ftp_original_hi' not in st.session_state:
+                                st.session_state['ftp_original_hi'] = _translate_long(orig_en,'en','hi')
+                            if st.session_state['ftp_language_paraphrase']=='हिंदी' and 'ftp_paraphrase_hi' not in st.session_state:
+                                st.session_state['ftp_paraphrase_hi'] = _translate_long(para_en,'en','hi')
+                            st.session_state['ftp_translation_hash'] = base_hash
+                        except Exception as te:
+                            st.warning(f"Hindi translation failed: {te}")
+                            if 'ftp_original_hi' not in st.session_state:
+                                st.session_state['ftp_original_hi'] = orig_en
+                            if 'ftp_paraphrase_hi' not in st.session_state:
+                                st.session_state['ftp_paraphrase_hi'] = para_en
+            orig_display = st.session_state.get('ftp_original_hi') if st.session_state['ftp_language_original']=='हिंदी' else orig_en
+            para_display = st.session_state.get('ftp_paraphrase_hi') if st.session_state['ftp_language_paraphrase']=='हिंदी' else para_en
+            def _wc(t: str) -> int:
+                return len([w for w in _re2.findall(r"\w+", t)]) if t else 0
+            wc_orig_en = _wc(orig_en)
+            wc_para_en = _wc(para_en)
+            st.markdown("### Original vs Paraphrase")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Original**" + (" (हिंदी)" if st.session_state['ftp_language_original']=='हिंदी' else ""))
+                cap_o = f"{_wc(orig_display)} words"
+                if st.session_state['ftp_language_original']=='हिंदी':
+                    cap_o += f" • EN: {wc_orig_en}"
+                st.caption(cap_o)
+                st.text_area("Original Text", value=orig_display[:15000], height=180, key="ftp_original_view")
+            with c2:
+                st.markdown("**Paraphrase**" + (" (हिंदी)" if st.session_state['ftp_language_paraphrase']=='हिंदी' else ""))
+                cap_p = f"{_wc(para_display)} words"
+                if st.session_state['ftp_language_paraphrase']=='हिंदी':
+                    cap_p += f" • EN: {wc_para_en}"
+                st.caption(cap_p)
+                st.text_area("Paraphrase", value=para_display, height=180, key="ftp_first_view")
+        _render_ftp_block_external()
 
 ## -------------------- Paraphrase Dataset Evaluation tab --------------------
 with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
@@ -2401,9 +2718,23 @@ with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
         <div style="text-align:center;margin-bottom:20px">
             <img src="https://cdn-icons-png.flaticon.com/512/4471/4471606.png" width="60">
             <h3 style="font-weight:600;color:#334155">Evaluate Fine-tuned Paraphraser on Dataset</h3>
-            <p style="color:#64748b;font-size:14px;">Use a built-in CSV (<code>train.csv</code>, <code>validation.csv</code>, <code>test.csv</code>) from the <code>paraphrase dataset/</code> folder or upload your own. We auto-detect columns like <code>text</code>/<code>input_text</code> and <code>reference</code>/<code>target_text</code> (case-insensitive). We'll generate paraphrases using your fine-tuned T5 model and compute BLEU-1..4, Perplexity, and Readability deltas.</p>
+            <p style="color:#64748b;font-size:14px;">Use a built-in CSV (<code>train.csv</code>, <code>validation.csv</code>, <code>test.csv</code>) from the <code>paraphrase dataset/</code> folder or upload your own. We auto-detect columns like <code>text</code>/<code>input_text</code> and <code>reference</code>/<code>target_text</code> (case-insensitive). We'll generate paraphrases using your selected fine-tuned model (T5-small or BART-base) and compute BLEU-1..4, Perplexity, and Readability deltas.</p>
         </div>
     """, unsafe_allow_html=True)
+
+    # Local fine-tuned model folders (same as Tab 10)
+    T5_PARAPHRASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "saved_paraphrasing_model"))
+    BART_PARAPHRASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bart_paraphrasing_model"))
+
+    # Explicit model selection for this tab to ensure outputs come only from the chosen model
+    model_choice_eval = st.selectbox("Model", ["T5-small", "BART-base"], index=0, key="ftp_ds_model_choice_tab11")
+    MODEL_DIR_EVAL = T5_PARAPHRASE_DIR if model_choice_eval == "T5-small" else BART_PARAPHRASE_DIR
+    if not os.path.isdir(MODEL_DIR_EVAL):
+        st.error(
+            f"Could not find the selected paraphrasing model folder for {model_choice_eval} at '{MODEL_DIR_EVAL}'. "
+            "Please ensure the directory exists and includes the tokenizer/model files."
+        )
+        st.stop()
 
     # Source selection similar to summarization dataset eval
     src_para = st.radio("Data source", ["Built-in dataset", "Upload CSV"], horizontal=True, key="ftp_ds_source")
@@ -2469,13 +2800,13 @@ with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
 
         # Decoding/complexity options reused from the fine-tuned tab
         st.subheader("Paraphrasing Settings")
-        colA, colB, colC = st.columns(3)
+        colA, colB = st.columns(2)
         with colA:
             complexity_ds = st.selectbox("Complexity", ["Simple", "Medium", "Advanced"], index=0, key="ftp_ds_complexity")
         with colB:
             strategy_ds = st.selectbox("Decoding", ["Auto (by Complexity)", "Beam search", "Sampling"], index=0, key="ftp_ds_strategy")
-        with colC:
-            max_len_ds = st.slider("Max length", 32, 128, 64, 4, key="ftp_ds_maxlen")
+        strict_meaning = st.checkbox("Strict meaning preservation (recommended)", value=True, help="Prioritize semantic faithfulness by using beam search and selecting the most similar candidate.")
+        # Output length is auto-adjusted per input; no manual max length control in this tab.
 
         # Reuse the preset logic
         def _preset(level: str) -> dict:
@@ -2496,7 +2827,62 @@ with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
             params_ds["num_beams"] = 1
             params_ds["temperature"] = st.slider("Temperature", 0.7, 1.5, float(params_ds.get("temperature", 1.0)), 0.05, key="ftp_ds_temp")
 
-        st.info(f"Loaded {len(df)} samples (rows {int(start_row)}–{int(end_row)}). Click 'Run Paraphrase Evaluation' to start.")
+        # Override for strict meaning: deterministic beams, meaning-preserving instruction
+        if strict_meaning:
+            params_ds["do_sample"] = False
+            params_ds["temperature"] = 1.0
+            params_ds["num_beams"] = max(6, int(params_ds.get("num_beams", 5)))
+            params_ds["instruction"] = "Preserve the exact meaning. Keep all information. Output one sentence."
+
+        # Optional: semantic similarity model for re-ranking (cached)
+        @st.cache_resource(show_spinner=False)
+        def _load_embedder():
+            try:
+                from sentence_transformers import SentenceTransformer
+                return SentenceTransformer("all-MiniLM-L6-v2")
+            except Exception:
+                return None
+
+        def _semantic_similarity(a: str, b: str) -> float:
+            try:
+                embedder = _load_embedder()
+                if embedder is None:
+                    return 0.0
+                embs = embedder.encode([a, b], normalize_embeddings=True)
+                import numpy as _np
+                return float((_np.array(embs[0]) * _np.array(embs[1])).sum())
+            except Exception:
+                return 0.0
+
+        def _is_incomplete_sentence(orig: str, cand: str) -> bool:
+            import re as _re
+            c = (cand or "").strip()
+            if not c:
+                return True
+            ends_ok = c.endswith(('.', '!', '?'))
+            wc_o = len([w for w in _re.findall(r"\w+", orig)]) or 1
+            wc_c = len([w for w in _re.findall(r"\w+", c)])
+            too_short = wc_c < max(4, int(0.6 * wc_o))
+            return (not ends_ok) or too_short
+
+        # Heuristic: set output max_length to be similar to input length
+        # We approximate decoder tokens from input words using a small factor, then clamp to safe bounds.
+        def _suggest_max_len(text: str) -> int:
+            try:
+                import re as _re
+                wc = len([w for w in _re.findall(r"\w+", text)])
+            except Exception:
+                wc = max(1, len(text) // 5)
+            # For short sentences, give enough room to finish; for longer, allow more tokens
+            approx_tokens = int(max(1, wc) * 1.8)  # scale up to reduce truncation risk
+            return max(16, min(196, approx_tokens))
+
+        show_pills([
+            (f"Rows: {int(start_row)}–{int(end_row)} ({len(df)} samples)", "info"),
+            (f"Model: {model_choice_eval}", "acc"),
+            ("Strict meaning: ON" if strict_meaning else "Strict meaning: OFF", "warn" if not strict_meaning else "ok")
+        ])
+        st.caption("Output length is auto-adjusted per input. Click 'Run Paraphrase Evaluation' to start.")
         run_ds = st.button("Run Paraphrase Evaluation", type="primary")
 
         if run_ds:
@@ -2511,10 +2897,12 @@ with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
                     continue
                 try:
                     # Generate paraphrase using the local fine-tuned model
+                    max_len_for_row = _suggest_max_len(original)
+                    num_ret = 5 if strict_meaning else 1
                     outs = _generate_paraphrases(
                         original,
-                        num_return_sequences=1,
-                        max_length=int(max_len_ds),
+                        num_return_sequences=int(num_ret),
+                        max_length=int(max_len_for_row),
                         num_beams=int(params_ds.get("num_beams", 5)),
                         temperature=float(params_ds.get("temperature", 1.0)),
                         do_sample=bool(params_ds.get("do_sample", False)),
@@ -2523,8 +2911,75 @@ with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
                         repetition_penalty=params_ds.get("repetition_penalty"),
                         length_penalty=params_ds.get("length_penalty"),
                         instruction=params_ds.get("instruction"),
+                        model_path=MODEL_DIR_EVAL,
                     )
                     gen = outs[0] if outs else ""
+
+                    # If strict meaning: select best candidate by combined semantic+ROUGE-L vs original
+                    if strict_meaning and outs:
+                        try:
+                            # First compute semantic similarity for all candidates
+                            sims = {cand: _semantic_similarity(original, cand) for cand in outs}
+                            # Pre-select top-3 by semantic similarity to cut down API calls
+                            top_cands = sorted(outs, key=lambda c: sims.get(c, 0.0), reverse=True)[:3]
+                            # Compute ROUGE-L for the top candidates
+                            rougeL = {}
+                            for cand in top_cands:
+                                payload = {"reference": original, "candidate": cand}
+                                resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=payload, timeout=60)
+                                rjson = resp.json() if resp.ok else {}
+                                scores = rjson.get("scores", {})
+                                rl = scores.get("rougeL", {})
+                                rougeL[cand] = float(rl.get("f1", 0.0)) if isinstance(rl, dict) else 0.0
+                            # Combine: 0.6 * semantic + 0.4 * ROUGE-L, penalize incomplete endings
+                            def _combined_score(cand: str) -> float:
+                                base = 0.6 * sims.get(cand, 0.0) + 0.4 * rougeL.get(cand, 0.0)
+                                return base - (0.1 if _is_incomplete_sentence(original, cand) else 0.0)
+                            best_cand = max(top_cands, key=_combined_score)
+                            gen = best_cand
+                        except Exception:
+                            # Fallback to original first candidate
+                            gen = outs[0]
+
+                    # If appears incomplete, retry with larger budget and pick the best finished candidate
+                    if strict_meaning and _is_incomplete_sentence(original, gen):
+                        try:
+                            retry_max = min(256, int(max_len_for_row * 1.4))
+                            retry_outs = _generate_paraphrases(
+                                original,
+                                num_return_sequences=3,
+                                max_length=int(retry_max),
+                                num_beams=int(params_ds.get("num_beams", 6)),
+                                temperature=1.0,
+                                do_sample=False,
+                                instruction=params_ds.get("instruction"),
+                                model_path=MODEL_DIR_EVAL,
+                            )
+                            # Prefer completed sentences; reuse the combined scorer when possible
+                            if retry_outs:
+                                # If embedder available, compute scores else pick the longest with punctuation
+                                sims_retry = {c: _semantic_similarity(original, c) for c in retry_outs}
+                                # Quick ROUGE-L on top-2
+                                top2 = sorted(retry_outs, key=lambda c: sims_retry.get(c, 0.0), reverse=True)[:2]
+                                rouge_retry = {}
+                                for c in top2:
+                                    payload = {"reference": original, "candidate": c}
+                                    resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=payload, timeout=60)
+                                    rjson = resp.json() if resp.ok else {}
+                                    scores = rjson.get("scores", {})
+                                    rl = scores.get("rougeL", {})
+                                    rouge_retry[c] = float(rl.get("f1", 0.0)) if isinstance(rl, dict) else 0.0
+                                def _score_retry(cand: str) -> float:
+                                    base = 0.6 * sims_retry.get(cand, 0.0) + 0.4 * rouge_retry.get(cand, 0.0)
+                                    return base - (0.15 if _is_incomplete_sentence(original, cand) else 0.0)
+                                gen = max(retry_outs, key=_score_retry)
+                                # Ensure final punctuation
+                                if not gen.strip().endswith(('.', '!', '?')):
+                                    gen = gen.strip() + '.'
+                        except Exception:
+                            # Last-resort: add a period if missing
+                            if gen and not gen.strip().endswith(('.', '!', '?')):
+                                gen = gen.strip() + '.'
 
                     # Metrics via backend
                     metrics_payload = {
@@ -2534,6 +2989,18 @@ with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
                     }
                     mresp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
                     mjson = mresp.json()
+
+                    # ROUGE (F1) via backend
+                    try:
+                        r_payload = {"reference": reference, "candidate": gen}
+                        r_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=r_payload, timeout=60)
+                        r_json = r_resp.json() if r_resp.ok else {}
+                        r_scores = r_json.get("scores", {}) if isinstance(r_json, dict) else {}
+                        r1_f1 = float(r_scores.get("rouge1", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rouge1", {}), dict) else float("nan")
+                        r2_f1 = float(r_scores.get("rouge2", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rouge2", {}), dict) else float("nan")
+                        rL_f1 = float(r_scores.get("rougeL", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rougeL", {}), dict) else float("nan")
+                    except Exception:
+                        r1_f1 = r2_f1 = rL_f1 = float("nan")
 
                     def _get(d, path, default=None):
                         cur = d
@@ -2555,6 +3022,10 @@ with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
                         "bleu_3": _get(mjson, ["bleu", "bleu_3"], float("nan")),
                         "bleu_4": _get(mjson, ["bleu", "bleu_4"], float("nan")),
                         "bleu": _get(mjson, ["bleu", "bleu"], float("nan")),
+                        # ROUGE (F1)
+                        "rouge1_f1": r1_f1,
+                        "rouge2_f1": r2_f1,
+                        "rougeL_f1": rL_f1,
                         # Perplexities
                         "ppl_candidate": _get(mjson, ["perplexity_candidate", "perplexity"], _get(mjson, ["perplexity", "perplexity"], float("nan"))),
                         "ppl_reference": _get(mjson, ["perplexity_reference", "perplexity"], float("nan")),
@@ -2613,10 +3084,99 @@ with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
                 st.markdown("### Aggregates")
                 agg = rdf[[
                     "bleu_1","bleu_2","bleu_3","bleu_4","bleu",
+                    "rouge1_f1","rouge2_f1","rougeL_f1",
                     "ppl_candidate","ppl_reference",
                     "delta_flesch_reading_ease","delta_flesch_kincaid","delta_gunning_fog","delta_smog_index"
                 ]].mean(numeric_only=True)
                 st.dataframe(agg.to_frame("mean").round(4))
+
+                # --- Visualizations ---
+                st.markdown("### Visualizations")
+                try:
+                    import pandas as pd  # ensure available in this scope
+                    if plt is None:
+                        st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
+                    else:
+                        # 1) BLEU grouped bar
+                        bleu_cols = ["bleu_1","bleu_2","bleu_3","bleu_4","bleu"]
+                        bleu_vals = [float(agg.get(c, float('nan'))) for c in bleu_cols]
+                        bleu_vals = [0.0 if pd.isna(v) else v for v in bleu_vals]
+                        fig1, ax1 = plt.subplots(figsize=(6, 3.0))
+                        x = list(range(len(bleu_cols))) if np is None else np.arange(len(bleu_cols))
+                        ax1.bar(x, bleu_vals, color="#3b82f6")
+                        ax1.set_xticks(x)
+                        ax1.set_xticklabels([c.upper() for c in bleu_cols])
+                        ax1.set_ylim(0, 1)
+                        ax1.set_ylabel("Score")
+                        ax1.set_title("Mean BLEU Scores")
+                        for xi, v in zip(x, bleu_vals):
+                            ax1.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+                        # defer rendering; will place in columns
+
+                        # 1b) ROUGE (F1) grouped bar
+                        rouge_cols = ["rouge1_f1","rouge2_f1","rougeL_f1"]
+                        rouge_labels = ["ROUGE-1 F1","ROUGE-2 F1","ROUGE-L F1"]
+                        rouge_vals = [float(agg.get(c, float('nan'))) for c in rouge_cols]
+                        rouge_vals = [0.0 if pd.isna(v) else v for v in rouge_vals]
+                        fig1b, ax1b = plt.subplots(figsize=(6, 3.0))
+                        x1b = list(range(len(rouge_cols))) if np is None else np.arange(len(rouge_cols))
+                        ax1b.bar(x1b, rouge_vals, color="#06b6d4")
+                        ax1b.set_xticks(x1b)
+                        ax1b.set_xticklabels(rouge_labels)
+                        ax1b.set_ylim(0, 1)
+                        ax1b.set_ylabel("F1")
+                        ax1b.set_title("Mean ROUGE (F1)")
+                        for xi, v in zip(x1b, rouge_vals):
+                            ax1b.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+                        # defer rendering; will place in columns
+
+                        # 2) Perplexity bar
+                        ppl_cols = ["ppl_candidate","ppl_reference"]
+                        ppl_vals = [float(agg.get(c, float('nan'))) for c in ppl_cols]
+                        ppl_vals = [0.0 if pd.isna(v) else v for v in ppl_vals]
+                        fig2, ax2 = plt.subplots(figsize=(5.5, 3.0))
+                        x2 = list(range(len(ppl_cols))) if np is None else np.arange(len(ppl_cols))
+                        ax2.bar(x2, ppl_vals, color=["#10b981", "#f59e0b"])
+                        ax2.set_xticks(x2)
+                        ax2.set_xticklabels([c.replace("ppl_","PPL ").title() for c in ppl_cols])
+                        ax2.set_ylabel("Perplexity (lower is better)")
+                        ax2.set_title("Mean Perplexity")
+                        for xi, v in zip(x2, ppl_vals):
+                            ax2.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+
+                        # Render 4 charts in two columns (2 charts per column)
+                        cols = st.columns(2)
+                        with cols[0]:
+                            st.pyplot(fig1, clear_figure=True)   # BLEU
+                            st.pyplot(fig1b, clear_figure=True)  # ROUGE F1
+                        with cols[1]:
+                            st.pyplot(fig2, clear_figure=True)   # Perplexity
+
+                        # 3) Readability deltas bar
+                        read_cols = [
+                            "delta_flesch_reading_ease","delta_flesch_kincaid",
+                            "delta_gunning_fog","delta_smog_index"
+                        ]
+                        read_labels = ["Δ Flesch Ease","Δ F-K Grade","Δ Gunning Fog","Δ SMOG"]
+                        read_vals = [float(agg.get(c, float('nan'))) for c in read_cols]
+                        read_vals = [0.0 if pd.isna(v) else v for v in read_vals]
+                        fig3, ax3 = plt.subplots(figsize=(6, 3.0))
+                        x3 = list(range(len(read_cols))) if np is None else np.arange(len(read_cols))
+                        ax3.bar(x3, read_vals, color="#8b5cf6")
+                        ax3.set_xticks(x3)
+                        ax3.set_xticklabels(read_labels)
+                        ax3.axhline(0, color="#94a3b8", linewidth=1)
+                        ax3.set_ylabel("Delta (gen - ref)")
+                        ax3.set_title("Mean Readability Deltas")
+                        for xi, v in zip(x3, read_vals):
+                            ax3.text(xi, v + (0.02 if v >= 0 else -0.02), f"{v:.2f}", ha='center', va='bottom' if v>=0 else 'top', fontsize=8)
+                        # Readability chart stacked below in right column
+                        with cols[1]:
+                            st.pyplot(fig3, clear_figure=True)
+
+                        # Removed BLEU-1 distribution histogram as requested
+                except Exception as viz_e:
+                    st.info(f"Could not render charts: {viz_e}")
 
 # Global footer
 st.markdown(

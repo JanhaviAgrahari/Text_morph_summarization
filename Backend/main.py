@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from . import models, schemas, crud
@@ -8,12 +9,13 @@ from .auth import create_access_token, get_current_user
 import json
 import os
 import logging
+from functools import partial
 
 # Local summarization and paraphrasing helpers
 from .summarizer import summarize_text, MODELS
 from .pdf_utils import extract_text_from_pdf
 from .parahrase import paraphrase_text, analyze_text_complexity
-from .fine_tuned_summarizer import summarize_text_with_fine_tuned_model
+from .fine_tuned_summarizer import summarize_text_with_fine_tuned_model, summarize_text_with_model
 from .metrics import calculate_all_metrics
 from . import schemas as _schemas
 from . import schemas as schemas
@@ -156,7 +158,10 @@ async def summarize_endpoint(
         if len(text_to_summarize) < 30:
             raise HTTPException(status_code=400, detail="Text is too short to summarize (min ~30 characters)")
 
-        summary = summarize_text(text_to_summarize, model_choice=model_choice, summary_length=summary_length)
+        # Offload heavy summarization to a worker thread to keep event loop responsive
+        summary = await run_in_threadpool(
+            partial(summarize_text, text_to_summarize, model_choice=model_choice, summary_length=summary_length)
+        )
         
         # Save to history if user is provided
         if user_email:
@@ -192,13 +197,15 @@ async def fine_tuned_summarize_endpoint(
     input_type: str = Form("text"),  # "text" or "pdf"
     text_input: str = Form(""),
     pdf_file: UploadFile = File(None),
+    model_choice: str = Form("t5"),  # 't5' or 'bart'
     user_email: str = Form(None),  # Optional user email to save in history
     db: Session = Depends(get_db)
 ):
-    """Summarize plain text or an uploaded PDF using the fine-tuned T5 model.
+    """Summarize plain text or an uploaded PDF using a local fine-tuned model (T5 or BART).
     
     summary_length: short | medium | long (mapped internally in summarizer)
     input_type: 'text' or 'pdf'
+    model_choice: 't5' or 'bart'
     """
     try:
         summary_length = (summary_length or "medium").lower()
@@ -227,8 +234,15 @@ async def fine_tuned_summarize_endpoint(
         if len(text_to_summarize) < 30:
             raise HTTPException(status_code=400, detail="Text is too short to summarize (min ~30 characters)")
 
-        # Use fine-tuned model for summarization
-        summary = summarize_text_with_fine_tuned_model(text_to_summarize, summary_length=summary_length)
+        # Use selected local model for summarization
+        model_choice_norm = (model_choice or "t5").lower()
+        if model_choice_norm not in {"t5", "bart"}:
+            raise HTTPException(status_code=422, detail="model_choice must be 't5' or 'bart'")
+
+        # Offload heavy summarization to a worker thread to keep event loop responsive
+        summary = await run_in_threadpool(
+            partial(summarize_text_with_model, text_to_summarize, summary_length=summary_length, model_choice=model_choice_norm)
+        )
         
         # Save to history if user is provided
         if user_email:
@@ -240,14 +254,14 @@ async def fine_tuned_summarize_endpoint(
                     type="summary",
                     original_text=text_to_summarize,
                     result_text=summary,
-                    model="fine-tuned-t5",
+                    model=f"fine-tuned-{model_choice_norm}",
                     parameters=json.dumps({"summary_length": summary_length})
                 )
                 crud.create_history_entry(db, history_entry)
         
         return {
             "summary": summary,
-            "model": "fine-tuned-t5",
+            "model": f"fine-tuned-{model_choice_norm}",
             "original_length": len(text_to_summarize.split()),
             "summary_length": len(summary.split())
         }
@@ -320,6 +334,31 @@ def evaluate_metrics(payload: MetricsRequest):
     except Exception as e:
         logging.getLogger("uvicorn.error").exception("Metrics evaluation failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# -------------------- History Create-by-email --------------------
+
+@app.post("/history")
+def create_history_by_email(payload: schemas.CreateHistoryByEmail, db: Session = Depends(get_db)):
+    """Create a history entry using the user's email instead of user_id.
+
+    This helps the frontend log original/result pairs for fine-tuned summarization and
+    paraphrasing without needing to look up user_id.
+    """
+    user = db.query(models.User).filter(models.User.email == payload.email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    entry = schemas.CreateHistoryEntry(
+        user_id=user.id,
+        type=payload.type,
+        original_text=payload.original_text,
+        result_text=payload.result_text,
+        model=payload.model,
+        parameters=payload.parameters,
+    )
+    db_entry = crud.create_history_entry(db, entry)
+    return {"id": db_entry.id, "message": "History saved"}
 
 
 # -------------------- History Endpoints --------------------

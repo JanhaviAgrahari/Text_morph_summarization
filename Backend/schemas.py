@@ -137,3 +137,12 @@ class CreateHistoryEntry(BaseModel):
     result_text: str
     model: str
     parameters: str | None = None
+
+# Create-by-email payload for external callers (frontend)
+class CreateHistoryByEmail(BaseModel):
+    email: str
+    type: str  # 'summary' or 'paraphrase'
+    original_text: str
+    result_text: str
+    model: str
+    parameters: str | None = None

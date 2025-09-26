@@ -122,6 +122,9 @@ fine_tuned_t5_summarizer/*
 fine_tuned_bart_summarizer/*
 !fine_tuned_bart_summarizer/.gitkeep
 
+bart_paraphrasing_model/*
+!bart_paraphrasing_model/.gitkeep
+
 summarization_dataset/*
 !summarization_dataset/.gitkeep
 
