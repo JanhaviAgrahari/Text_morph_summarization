@@ -215,10 +215,10 @@ tabs = st.tabs([
     "📝 Summarization",
     "✏️ Paraphrasing",
     "� Fine-tuned Summarization",
-    "�📚 History",
-    "📚 Dataset Eval",
+    "📚 Summarization Dataset Eval",
     "✏️ Fine-tuned Paraphrasing",
     "📚 Paraphrase Dataset Eval",
+    "�📚 History",  # moved to last
 ])
 
 # Sign in tab
@@ -972,6 +972,7 @@ with tabs[5]:  # Tab 5 - Summarization
                                     except Exception as metrics_err:
                                         st.warning(f"Failed to calculate additional metrics: {metrics_err}")
 
+            
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
 
@@ -1263,8 +1264,8 @@ with tabs[6]:  # Tab 6 - Paraphrasing
                 else:
                     st.warning("No ROUGE results returned from the backend.")
 
-# Dataset Evaluation tab
-with tabs[9]:
+# Summarization Dataset Evaluation tab
+with tabs[8]:
     st.markdown("""
         <div style="text-align:center;margin-bottom:20px">
             <img src="https://cdn-icons-png.flaticon.com/512/4471/4471606.png" width="60">
@@ -2039,7 +2040,7 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
 
 # -------------------- History Tab --------------------
 
-with tabs[8]:  # Tab 8 - History
+with tabs[11]:  # History (moved to last)
     token = st.session_state.get("token")
     if not token:
         st.warning("Please sign in to view your history.")
@@ -2157,7 +2158,7 @@ with tabs[8]:  # Tab 8 - History
 
 # -------------------- Fine-tuned Paraphrasing (Local Model) --------------------
 
-with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
+with tabs[9]:  # Tab 9 - Fine-tuned Paraphrasing
     token = st.session_state.get("token")
     if not token:
         st.markdown(
@@ -2700,7 +2701,7 @@ with tabs[10]:  # Tab 10 - Fine-tuned Paraphrasing
         _render_ftp_block_external()
 
 ## -------------------- Paraphrase Dataset Evaluation tab --------------------
-with tabs[11]:  # Tab 11 - Paraphrase Dataset Eval
+with tabs[10]:  # Tab 10 - Paraphrase Dataset Eval
     token = st.session_state.get("token")
     if not token:
         st.markdown(
