@@ -10,6 +10,8 @@ transformers
 sentencepiece
 nltk
 googletrans==4.0.0-rc1
+# Optional higher-quality translation (uncomment if you want to preinstall instead of lazy loading / fallback)
+# indictrans2
 pydantic
 httpx
 python-dotenv

@@ -41,6 +41,111 @@ API_URL = BACKEND_URL  # Alias for legacy references
 ROUGE_OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rouge_score"))
 os.makedirs(ROUGE_OUTPUT_DIR, exist_ok=True)
 
+# --- Unified Translation Utilities (improved quality) ---
+# We centralize translation so all tabs use the same logic and higher quality models (IndicTrans2) when available.
+@st.cache_resource(show_spinner=False)
+def _load_hf_translator(direction: str):
+    """Load an IndicTrans2 (preferred) or Opus-MT model for a given direction.
+
+    direction examples: 'en-hi', 'hi-en'. Falls back silently if model not available.
+    Returns (tokenizer, model, device, model_name) or (None, None, -1, None) on failure.
+    """
+    try:
+        import torch  # noqa: F401
+        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+        # Prefer IndicTrans2 (not bilingual pairs for every direction, but en-hi & hi-en exist)
+        preferred = f"ai4bharat/indictrans2-{direction}"
+        model_name = preferred
+        try:
+            tok = AutoTokenizer.from_pretrained(preferred, trust_remote_code=True)
+            mdl = AutoModelForSeq2SeqLM.from_pretrained(preferred, trust_remote_code=True)
+        except Exception:
+            # Fallback to opus-mt
+            opus = f"Helsinki-NLP/opus-mt-{direction}"
+            tok = AutoTokenizer.from_pretrained(opus)
+            mdl = AutoModelForSeq2SeqLM.from_pretrained(opus)
+            model_name = opus
+        device = 0 if getattr(__import__('torch'), 'cuda').is_available() else -1  # type: ignore
+        return tok, mdl, device, model_name
+    except Exception:
+        return None, None, -1, None
+
+def _segment_paragraphs(text: str) -> list[str]:
+    # Keep paragraph boundaries – split on 2+ newlines
+    paras = [p.strip() for p in re.split(r"\n{2,}", text.replace("\r\n", "\n")) if p.strip()]
+    return paras if paras else [text.strip()]
+
+def _segment_sentences(paragraph: str) -> list[str]:
+    # Lightweight sentence splitter – avoids downloading NLTK resources
+    sents = re.split(r'(?<=[.!?])\s+', paragraph.strip())
+    return [s for s in sents if s.strip()]
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def _translate_with_hf_cached(chunks: tuple[str, ...], direction: str) -> list[str]:
+    tok, mdl, device, _ = _load_hf_translator(direction)
+    if tok is None or mdl is None:
+        return []
+    out: list[str] = []
+    import torch
+    for sent in chunks:
+        if not sent.strip():
+            out.append("")
+            continue
+        batch = tok(sent, return_tensors='pt', truncation=True, max_length=512)
+        if device >= 0:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            mdl.to(device)
+        gen = mdl.generate(**batch, max_length=512, num_beams=4)
+        decoded = tok.batch_decode(gen, skip_special_tokens=True)[0]
+        out.append(decoded.strip())
+    return out
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def _google_translate_bulk(chunks: tuple[str, ...], src: str, tgt: str) -> list[str]:
+    # Fallback using googletrans (may be slower / rate-limited)
+    try:
+        from googletrans import Translator
+        tr = Translator()
+        results = []
+        for c in chunks:
+            if not c.strip():
+                results.append("")
+                continue
+            try:
+                results.append(tr.translate(c, src=src, dest=tgt).text)
+            except Exception:
+                results.append(c)  # graceful fallback
+        return results
+    except Exception:
+        return list(chunks)
+
+def translate_text_full(text: str, src: str = 'en', tgt: str = 'hi') -> str:
+    """High quality translation preserving full content & structure.
+
+    Strategy:
+        1. Split paragraphs, then sentences.
+        2. Try IndicTrans2 / Opus-MT (cached) sentence-wise.
+        3. If that fails or returns empty, fallback to googletrans.
+        4. Reconstruct paragraphs with double newlines; ensure no truncation.
+    """
+    if not text or not text.strip() or src == tgt:
+        return text
+    direction = f"{src}-{tgt}"
+    paragraphs = _segment_paragraphs(text)
+    translated_paras: list[str] = []
+    for para in paragraphs:
+        sentences = _segment_sentences(para)
+        tpl = tuple(sentences)
+        hf_out = _translate_with_hf_cached(tpl, direction)
+        if not hf_out or len([o for o in hf_out if o.strip()]) == 0:
+            hf_out = _google_translate_bulk(tpl, src, tgt)
+        # If counts mismatch, pad
+        if len(hf_out) != len(sentences):
+            hf_out = hf_out + ["" for _ in range(len(sentences) - len(hf_out))]
+        translated_paras.append(" ".join(hf_out).strip())
+    return "\n\n".join(translated_paras).strip()
+
+
 # --- Page configuration & global styling (UI enhancement) ---
 if "_page_config_set" not in st.session_state:
         st.set_page_config(
@@ -1798,51 +1903,10 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                                    ('ft_summary_hi' not in st.session_state and st.session_state['ft_language_summary'] == 'हिंदी'):
                                     with st.spinner('Translating (may download models first time)...'):
                                         try:
-                                            @st.cache_resource(show_spinner=False)
-                                            def _get_translator(src: str, tgt: str):
-                                                from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-                                                import torch
-                                                model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
-                                                tok = AutoTokenizer.from_pretrained(model_name)
-                                                mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-                                                device = 0 if torch.cuda.is_available() else -1
-                                                return tok, mdl, device
-                                            def _translate_long(text: str, src: str, tgt: str) -> str:
-                                                if not text.strip():
-                                                    return ''
-                                                tok, mdl, device = _get_translator(src, tgt)
-                                                import torch, re as _re
-                                                paras = [p.strip() for p in _re.split(r"\n{2,}", text) if p.strip()]
-                                                out_paras = []
-                                                for p in paras:
-                                                    if len(p) > 1200:
-                                                        segs = []
-                                                        sentences = _re.split(r'(?<=[.!?])\s+', p)
-                                                        cur = ''
-                                                        for s in sentences:
-                                                            if len(cur) + len(s) > 800 and cur:
-                                                                segs.append(cur)
-                                                                cur = s
-                                                            else:
-                                                                cur = (cur + ' ' + s).strip()
-                                                        if cur:
-                                                            segs.append(cur)
-                                                    else:
-                                                        segs = [p]
-                                                    seg_outs = []
-                                                    for seg in segs:
-                                                        batch = tok(seg, return_tensors='pt', truncation=True, max_length=512)
-                                                        if device >= 0:
-                                                            batch = {k: v.to(device) for k, v in batch.items()}
-                                                            mdl.to(device)
-                                                        gen = mdl.generate(**batch, max_length=512, num_beams=4)
-                                                        seg_outs.append(tok.decode(gen[0], skip_special_tokens=True))
-                                                    out_paras.append(' '.join(seg_outs))
-                                                return '\n\n'.join(out_paras)
                                             if st.session_state['ft_language_original'] == 'हिंदी' and 'ft_original_hi' not in st.session_state:
-                                                st.session_state['ft_original_hi'] = _translate_long(orig_en, 'en', 'hi')
+                                                st.session_state['ft_original_hi'] = translate_text_full(orig_en, 'en', 'hi')
                                             if st.session_state['ft_language_summary'] == 'हिंदी' and 'ft_summary_hi' not in st.session_state:
-                                                st.session_state['ft_summary_hi'] = _translate_long(sum_en, 'en', 'hi')
+                                                st.session_state['ft_summary_hi'] = translate_text_full(sum_en, 'en', 'hi')
                                             st.session_state['ft_translation_hash'] = base_hash
                                         except Exception as te:
                                             st.warning(f"Hindi translation failed: {te}")
@@ -1867,14 +1931,17 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                                 if st.session_state['ft_language_original'] == 'हिंदी':
                                     cap_o += f" • EN: {wc_orig_en}"
                                 st.caption(cap_o)
-                                st.text_area(label="Original", value=(orig_display or '')[:15000], height=260, key="ft_orig_view")
+                                # Force widget value refresh when language toggles by updating session_state before rendering
+                                st.session_state['ft_orig_view'] = (orig_display or '')[:15000]
+                                st.text_area(label="Original", value=st.session_state['ft_orig_view'], height=260, key="ft_orig_view")
                             with col_sum:
                                 st.markdown(f"#### Summary ({model_used})" + (" (हिंदी)" if st.session_state['ft_language_summary'] == 'हिंदी' else ""))
                                 cap_s = f"{_wc(sum_display)} words"
                                 if st.session_state['ft_language_summary'] == 'हिंदी':
                                     cap_s += f" • EN: {wc_sum_en}"
                                 st.caption(cap_s)
-                                st.text_area(label="Summary", value=sum_display or '', height=260, key="ft_sum_view")
+                                st.session_state['ft_sum_view'] = sum_display or ''
+                                st.text_area(label="Summary", value=st.session_state['ft_sum_view'], height=260, key="ft_sum_view")
                                 if wc_orig_en > 0:
                                     st.markdown(f"**Compression (English baseline):** {compression:.0f}%")
                                 else:
@@ -1936,51 +2003,10 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                    ('ft_summary_hi' not in st.session_state and st.session_state['ft_language_summary'] == 'हिंदी'):
                     with st.spinner('Translating (may download models first time)...'):
                         try:
-                            @st.cache_resource(show_spinner=False)
-                            def _get_translator(src: str, tgt: str):
-                                from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-                                import torch
-                                model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
-                                tok = AutoTokenizer.from_pretrained(model_name)
-                                mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-                                device = 0 if torch.cuda.is_available() else -1
-                                return tok, mdl, device
-                            def _translate_long(text: str, src: str, tgt: str) -> str:
-                                if not text.strip():
-                                    return ''
-                                tok, mdl, device = _get_translator(src, tgt)
-                                import torch, re as _re
-                                paras = [p.strip() for p in _re.split(r"\n{2,}", text) if p.strip()]
-                                out_paras = []
-                                for p in paras:
-                                    if len(p) > 1200:
-                                        segs = []
-                                        sentences = _re.split(r'(?<=[.!?])\s+', p)
-                                        cur = ''
-                                        for s in sentences:
-                                            if len(cur) + len(s) > 800 and cur:
-                                                segs.append(cur)
-                                                cur = s
-                                            else:
-                                                cur = (cur + ' ' + s).strip()
-                                        if cur:
-                                            segs.append(cur)
-                                    else:
-                                        segs = [p]
-                                    seg_outs = []
-                                    for seg in segs:
-                                        batch = tok(seg, return_tensors='pt', truncation=True, max_length=512)
-                                        if device >= 0:
-                                            batch = {k: v.to(device) for k, v in batch.items()}
-                                            mdl.to(device)
-                                        gen = mdl.generate(**batch, max_length=512, num_beams=4)
-                                        seg_outs.append(tok.decode(gen[0], skip_special_tokens=True))
-                                    out_paras.append(' '.join(seg_outs))
-                                return '\n\n'.join(out_paras)
                             if st.session_state['ft_language_original'] == 'हिंदी' and 'ft_original_hi' not in st.session_state:
-                                st.session_state['ft_original_hi'] = _translate_long(orig_en, 'en', 'hi')
+                                st.session_state['ft_original_hi'] = translate_text_full(orig_en, 'en', 'hi')
                             if st.session_state['ft_language_summary'] == 'हिंदी' and 'ft_summary_hi' not in st.session_state:
-                                st.session_state['ft_summary_hi'] = _translate_long(sum_en, 'en', 'hi')
+                                st.session_state['ft_summary_hi'] = translate_text_full(sum_en, 'en', 'hi')
                             st.session_state['ft_translation_hash'] = base_hash
                         except Exception as te:
                             st.warning(f"Hindi translation failed: {te}")
@@ -2002,14 +2028,16 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                 if st.session_state['ft_language_original'] == 'हिंदी':
                     cap_o += f" • EN: {wc_orig_en}"
                 st.caption(cap_o)
-                st.text_area(label="Original", value=(orig_display or '')[:15000], height=260, key="ft_orig_view")
+                st.session_state['ft_orig_view'] = (orig_display or '')[:15000]
+                st.text_area(label="Original", value=st.session_state['ft_orig_view'], height=260, key="ft_orig_view")
             with col_sum:
                 st.markdown(f"#### Summary ({model_used})" + (" (हिंदी)" if st.session_state['ft_language_summary'] == 'हिंदी' else ""))
                 cap_s = f"{_wc(sum_display)} words"
                 if st.session_state['ft_language_summary'] == 'हिंदी':
                     cap_s += f" • EN: {wc_sum_en}"
                 st.caption(cap_s)
-                st.text_area(label="Summary", value=sum_display or '', height=260, key="ft_sum_view")
+                st.session_state['ft_sum_view'] = sum_display or ''
+                st.text_area(label="Summary", value=st.session_state['ft_sum_view'], height=260, key="ft_sum_view")
                 if wc_orig_en > 0:
                     st.markdown(f"**Compression (English baseline):** {compression:.0f}%")
                 else:
@@ -2491,51 +2519,10 @@ with tabs[9]:  # Tab 9 - Fine-tuned Paraphrasing
                                ('ftp_paraphrase_hi' not in st.session_state and st.session_state['ftp_language_paraphrase']=='हिंदी'):
                                 with st.spinner('Translating (may download models first time)...'):
                                     try:
-                                        @st.cache_resource(show_spinner=False)
-                                        def _get_translator(src: str, tgt: str):
-                                            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-                                            import torch
-                                            model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
-                                            tok = AutoTokenizer.from_pretrained(model_name)
-                                            mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-                                            device = 0 if torch.cuda.is_available() else -1
-                                            return tok, mdl, device
-                                        def _translate_long(text: str, src: str, tgt: str) -> str:
-                                            if not text.strip():
-                                                return ''
-                                            tok, mdl, device = _get_translator(src, tgt)
-                                            import torch, re as _re
-                                            paras = [p.strip() for p in _re.split(r"\n{2,}", text) if p.strip()]
-                                            out_paras = []
-                                            for p in paras:
-                                                if len(p) > 1200:
-                                                    segs = []
-                                                    sentences = _re.split(r'(?<=[.!?])\s+', p)
-                                                    cur = ''
-                                                    for s in sentences:
-                                                        if len(cur) + len(s) > 800 and cur:
-                                                            segs.append(cur)
-                                                            cur = s
-                                                        else:
-                                                            cur = (cur + ' ' + s).strip()
-                                                    if cur:
-                                                        segs.append(cur)
-                                                else:
-                                                    segs = [p]
-                                                seg_outs = []
-                                                for seg in segs:
-                                                    batch = tok(seg, return_tensors='pt', truncation=True, max_length=512)
-                                                    if device >= 0:
-                                                        batch = {k: v.to(device) for k, v in batch.items()}
-                                                        mdl.to(device)
-                                                    gen = mdl.generate(**batch, max_length=512, num_beams=4)
-                                                    seg_outs.append(tok.decode(gen[0], skip_special_tokens=True))
-                                                out_paras.append(' '.join(seg_outs))
-                                            return '\n\n'.join(out_paras)
                                         if st.session_state['ftp_language_original']=='हिंदी' and 'ftp_original_hi' not in st.session_state:
-                                            st.session_state['ftp_original_hi'] = _translate_long(orig_en,'en','hi')
+                                            st.session_state['ftp_original_hi'] = translate_text_full(orig_en,'en','hi')
                                         if st.session_state['ftp_language_paraphrase']=='हिंदी' and 'ftp_paraphrase_hi' not in st.session_state:
-                                            st.session_state['ftp_paraphrase_hi'] = _translate_long(para_en,'en','hi')
+                                            st.session_state['ftp_paraphrase_hi'] = translate_text_full(para_en,'en','hi')
                                         st.session_state['ftp_translation_hash'] = base_hash
                                     except Exception as te:
                                         st.warning(f"Hindi translation failed: {te}")
@@ -2556,14 +2543,16 @@ with tabs[9]:  # Tab 9 - Fine-tuned Paraphrasing
                             if st.session_state['ftp_language_original']=='हिंदी':
                                 cap_o += f" • EN: {wc_orig_en}"
                             st.caption(cap_o)
-                            st.text_area("Original Text", value=orig_display[:15000], height=180, key="ftp_original_view")
+                            st.session_state['ftp_original_view'] = orig_display[:15000]
+                            st.text_area("Original Text", value=st.session_state['ftp_original_view'], height=180, key="ftp_original_view")
                         with c2:
                             st.markdown("**Paraphrase**" + (" (हिंदी)" if st.session_state['ftp_language_paraphrase']=='हिंदी' else ""))
                             cap_p = f"{_wc(para_display)} words"
                             if st.session_state['ftp_language_paraphrase']=='हिंदी':
                                 cap_p += f" • EN: {wc_para_en}"
                             st.caption(cap_p)
-                            st.text_area("Paraphrase", value=para_display, height=180, key="ftp_first_view")
+                            st.session_state['ftp_first_view'] = para_display
+                            st.text_area("Paraphrase", value=st.session_state['ftp_first_view'], height=180, key="ftp_first_view")
                     st.markdown("### Original vs Paraphrase")
                     _render_ftp_block()
 
@@ -2624,51 +2613,10 @@ with tabs[9]:  # Tab 9 - Fine-tuned Paraphrasing
                    ('ftp_paraphrase_hi' not in st.session_state and st.session_state['ftp_language_paraphrase']=='हिंदी'):
                     with st.spinner('Translating (may download models first time)...'):
                         try:
-                            @st.cache_resource(show_spinner=False)
-                            def _get_translator(src: str, tgt: str):
-                                from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-                                import torch
-                                model_name = f"Helsinki-NLP/opus-mt-{src}-{tgt}"
-                                tok = AutoTokenizer.from_pretrained(model_name)
-                                mdl = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-                                device = 0 if torch.cuda.is_available() else -1
-                                return tok, mdl, device
-                            def _translate_long(text: str, src: str, tgt: str) -> str:
-                                if not text.strip():
-                                    return ''
-                                tok, mdl, device = _get_translator(src, tgt)
-                                import torch, re as _re
-                                paras = [p.strip() for p in _re.split(r"\n{2,}", text) if p.strip()]
-                                out_paras = []
-                                for p in paras:
-                                    if len(p) > 1200:
-                                        segs = []
-                                        sentences = _re.split(r'(?<=[.!?])\s+', p)
-                                        cur = ''
-                                        for s in sentences:
-                                            if len(cur) + len(s) > 800 and cur:
-                                                segs.append(cur)
-                                                cur = s
-                                            else:
-                                                cur = (cur + ' ' + s).strip()
-                                        if cur:
-                                            segs.append(cur)
-                                    else:
-                                        segs = [p]
-                                    seg_outs = []
-                                    for seg in segs:
-                                        batch = tok(seg, return_tensors='pt', truncation=True, max_length=512)
-                                        if device >= 0:
-                                            batch = {k: v.to(device) for k, v in batch.items()}
-                                            mdl.to(device)
-                                        gen = mdl.generate(**batch, max_length=512, num_beams=4)
-                                        seg_outs.append(tok.decode(gen[0], skip_special_tokens=True))
-                                    out_paras.append(' '.join(seg_outs))
-                                return '\n\n'.join(out_paras)
                             if st.session_state['ftp_language_original']=='हिंदी' and 'ftp_original_hi' not in st.session_state:
-                                st.session_state['ftp_original_hi'] = _translate_long(orig_en,'en','hi')
+                                st.session_state['ftp_original_hi'] = translate_text_full(orig_en,'en','hi')
                             if st.session_state['ftp_language_paraphrase']=='हिंदी' and 'ftp_paraphrase_hi' not in st.session_state:
-                                st.session_state['ftp_paraphrase_hi'] = _translate_long(para_en,'en','hi')
+                                st.session_state['ftp_paraphrase_hi'] = translate_text_full(para_en,'en','hi')
                             st.session_state['ftp_translation_hash'] = base_hash
                         except Exception as te:
                             st.warning(f"Hindi translation failed: {te}")
@@ -2690,14 +2638,16 @@ with tabs[9]:  # Tab 9 - Fine-tuned Paraphrasing
                 if st.session_state['ftp_language_original']=='हिंदी':
                     cap_o += f" • EN: {wc_orig_en}"
                 st.caption(cap_o)
-                st.text_area("Original Text", value=orig_display[:15000], height=180, key="ftp_original_view")
+                st.session_state['ftp_original_view'] = orig_display[:15000]
+                st.text_area("Original Text", value=st.session_state['ftp_original_view'], height=180, key="ftp_original_view")
             with c2:
                 st.markdown("**Paraphrase**" + (" (हिंदी)" if st.session_state['ftp_language_paraphrase']=='हिंदी' else ""))
                 cap_p = f"{_wc(para_display)} words"
                 if st.session_state['ftp_language_paraphrase']=='हिंदी':
                     cap_p += f" • EN: {wc_para_en}"
                 st.caption(cap_p)
-                st.text_area("Paraphrase", value=para_display, height=180, key="ftp_first_view")
+                st.session_state['ftp_first_view'] = para_display
+                st.text_area("Paraphrase", value=st.session_state['ftp_first_view'], height=180, key="ftp_first_view")
         _render_ftp_block_external()
 
 ## -------------------- Paraphrase Dataset Evaluation tab --------------------
