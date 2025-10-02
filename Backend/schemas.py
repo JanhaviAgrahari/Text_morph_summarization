@@ -169,3 +169,26 @@ class AdminHistoryEntry(BaseModel):
 class AdminHistoryResponse(BaseModel):
     entries: list[AdminHistoryEntry]
     total_count: int
+
+
+# --- Admin edit schema ---
+class UpdateHistoryEntry(BaseModel):
+    result_text: str  # The edited summary/paraphrase
+
+
+# --- Admin statistics schemas ---
+class UserActivityStats(BaseModel):
+    user_email: str
+    user_name: str | None
+    total_summaries: int
+    total_paraphrases: int
+    last_activity: datetime | None
+
+
+class AdminStatistics(BaseModel):
+    total_users: int
+    total_summaries: int
+    total_paraphrases: int
+    total_documents: int
+    active_users_count: int  # Users with at least one activity
+    recent_activity: list[UserActivityStats]

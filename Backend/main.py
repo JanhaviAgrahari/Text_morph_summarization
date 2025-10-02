@@ -658,3 +658,99 @@ def get_all_user_history(
     except Exception as e:
         logging.getLogger("uvicorn.error").exception("Failed to fetch admin history")
         raise HTTPException(status_code=500, detail=f"Failed to fetch history: {e}")
+
+
+@app.put("/admin/history/{entry_id}")
+def update_history_entry(
+    entry_id: int,
+    payload: schemas.UpdateHistoryEntry,
+    current_user: models.User = Depends(require_mentor_or_admin),
+    db: Session = Depends(get_db)
+):
+    """Update/edit a history entry (admin/mentor only).
+    
+    Args:
+        entry_id: ID of the history entry to update
+        payload: New result_text (edited summary/paraphrase)
+    
+    Returns:
+        Success message
+    """
+    try:
+        # Get the entry
+        entry = db.query(models.History).filter(models.History.id == entry_id).first()
+        if not entry:
+            raise HTTPException(status_code=404, detail="History entry not found")
+        
+        # Update the result_text
+        entry.result_text = payload.result_text.strip()
+        db.commit()
+        db.refresh(entry)
+        
+        return {"message": "History entry updated successfully", "id": entry.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Failed to update history entry")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update entry: {e}")
+
+
+@app.get("/admin/statistics", response_model=schemas.AdminStatistics)
+def get_admin_statistics(
+    current_user: models.User = Depends(require_mentor_or_admin),
+    db: Session = Depends(get_db)
+):
+    """Get usage statistics for the admin dashboard (admin/mentor only).
+    
+    Returns:
+        AdminStatistics with user counts, activity metrics, and recent user activity
+    """
+    try:
+        # Total users
+        total_users = db.query(models.User).count()
+        
+        # Total summaries and paraphrases
+        total_summaries = db.query(models.History).filter(models.History.type == "summary").count()
+        total_paraphrases = db.query(models.History).filter(models.History.type == "paraphrase").count()
+        total_documents = total_summaries + total_paraphrases
+        
+        # Active users (users with at least one history entry)
+        active_users_count = db.query(models.History.user_id).distinct().count()
+        
+        # Recent activity per user (top 10 most active)
+        from sqlalchemy import func, desc
+        user_activity_query = db.query(
+            models.User.email,
+            models.User.name,
+            func.count(func.nullif(models.History.type == "summary", False)).label("summaries"),
+            func.count(func.nullif(models.History.type == "paraphrase", False)).label("paraphrases"),
+            func.max(models.History.created_at).label("last_activity")
+        ).join(models.History, models.User.id == models.History.user_id)\
+         .group_by(models.User.id)\
+         .order_by(desc("last_activity"))\
+         .limit(10)\
+         .all()
+        
+        recent_activity = []
+        for email, name, summaries, paraphrases, last_activity in user_activity_query:
+            recent_activity.append(schemas.UserActivityStats(
+                user_email=email,
+                user_name=name,
+                total_summaries=summaries or 0,
+                total_paraphrases=paraphrases or 0,
+                last_activity=last_activity
+            ))
+        
+        return schemas.AdminStatistics(
+            total_users=total_users,
+            total_summaries=total_summaries,
+            total_paraphrases=total_paraphrases,
+            total_documents=total_documents,
+            active_users_count=active_users_count,
+            recent_activity=recent_activity
+        )
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Failed to fetch admin statistics")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch statistics: {e}")
+

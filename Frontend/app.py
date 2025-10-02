@@ -269,6 +269,22 @@ def api_post(path: str, payload: dict, token: Optional[str] = None, timeout: int
     except Exception as e:  # pragma: no cover
         return False, str(e)
 
+def api_put(path: str, payload: dict, token: Optional[str] = None, timeout: int = 60) -> Tuple[bool, Any]:
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = f"{BACKEND_URL}{path}"
+    try:
+        r = requests.put(url, json=payload, headers=headers, timeout=timeout)
+        if r.ok:
+            return True, r.json()
+        try:
+            return False, r.json().get("detail", r.text)
+        except Exception:
+            return False, r.text
+    except Exception as e:  # pragma: no cover
+        return False, str(e)
+
 def api_get(path: str, token: Optional[str] = None) -> Tuple[bool, Any]:
     headers = {}
     if token:
@@ -3139,144 +3155,311 @@ with tabs[12]:  # Admin Panel (mentor/admin only)
                 # User has proper access
                 st.success(f"✅ Welcome, {user_email} (Role: **{user_role}**)")
                 
-                # Filter controls
-                col1, col2, col3 = st.columns([2, 2, 1])
-                with col1:
-                    type_filter = st.selectbox(
-                        "Filter by Type",
-                        options=["All", "Summary", "Paraphrase"],
-                        index=0
-                    )
-                with col2:
-                    limit = st.number_input("Max entries to display", min_value=10, max_value=5000, value=100, step=10)
-                with col3:
-                    refresh_btn = st.button("🔄 Refresh", use_container_width=True)
+                # Create tabs for Dashboard and History
+                admin_tab1, admin_tab2 = st.tabs(["📊 Usage Statistics Dashboard", "📋 History & Edit"])
                 
-                # Fetch all history entries
-                query_params = f"?limit={limit}"
-                if type_filter != "All":
-                    query_params += f"&type_filter={type_filter.lower()}"
-                
-                with st.spinner("Loading all history entries..."):
-                    ok, data = api_get(f"/admin/history{query_params}", token=token)
-                
-                if not ok:
-                    st.error(f"❌ Failed to fetch history: {data}")
-                    if "403" in str(data) or "forbidden" in str(data).lower():
-                        st.warning("Your access was denied. Please ensure your account has the correct role.")
-                elif not isinstance(data, dict):
-                    st.error(f"Unexpected response format: {data}")
-                else:
-                    entries = data.get("entries", [])
-                    total_count = data.get("total_count", 0)
+                # ==================== TAB 1: USAGE STATISTICS DASHBOARD ====================
+                with admin_tab1:
+                    st.markdown("### 📈 System Overview")
                     
-                    if not entries:
-                        st.info("No history entries found.")
+                    # Fetch statistics
+                    with st.spinner("Loading statistics..."):
+                        ok_stats, stats_data = api_get("/admin/statistics", token=token)
+                    
+                    if not ok_stats:
+                        st.error(f"❌ Failed to fetch statistics: {stats_data}")
+                    elif not isinstance(stats_data, dict):
+                        st.error(f"Unexpected response format: {stats_data}")
                     else:
-                        # Display summary statistics
-                        st.markdown("### 📊 Statistics")
-                        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+                        # Main metrics in cards
+                        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
                         
-                        summaries_count = len([e for e in entries if e.get("type") == "summary"])
-                        paraphrases_count = len([e for e in entries if e.get("type") == "paraphrase"])
-                        unique_users = len(set(e.get("user_email") for e in entries if e.get("user_email")))
+                        with metric_col1:
+                            st.markdown("""
+                            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 10px; color: white;'>
+                                <h3 style='margin:0; font-size:2.5em;'>{}</h3>
+                                <p style='margin:0; opacity:0.9;'>Total Users</p>
+                            </div>
+                            """.format(stats_data.get("total_users", 0)), unsafe_allow_html=True)
                         
-                        with stat_col1:
-                            st.metric("Total Entries", total_count)
-                        with stat_col2:
-                            st.metric("Summaries", summaries_count)
-                        with stat_col3:
-                            st.metric("Paraphrases", paraphrases_count)
-                        with stat_col4:
-                            st.metric("Unique Users", unique_users)
+                        with metric_col2:
+                            st.markdown("""
+                            <div style='background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 20px; border-radius: 10px; color: white;'>
+                                <h3 style='margin:0; font-size:2.5em;'>{}</h3>
+                                <p style='margin:0; opacity:0.9;'>Total Documents</p>
+                            </div>
+                            """.format(stats_data.get("total_documents", 0)), unsafe_allow_html=True)
+                        
+                        with metric_col3:
+                            st.markdown("""
+                            <div style='background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); padding: 20px; border-radius: 10px; color: white;'>
+                                <h3 style='margin:0; font-size:2.5em;'>{}</h3>
+                                <p style='margin:0; opacity:0.9;'>Summaries</p>
+                            </div>
+                            """.format(stats_data.get("total_summaries", 0)), unsafe_allow_html=True)
+                        
+                        with metric_col4:
+                            st.markdown("""
+                            <div style='background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); padding: 20px; border-radius: 10px; color: white;'>
+                                <h3 style='margin:0; font-size:2.5em;'>{}</h3>
+                                <p style='margin:0; opacity:0.9;'>Paraphrases</p>
+                            </div>
+                            """.format(stats_data.get("total_paraphrases", 0)), unsafe_allow_html=True)
+                        
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        
+                        # Active users metric
+                        st.markdown("### 👥 User Engagement")
+                        engage_col1, engage_col2 = st.columns(2)
+                        with engage_col1:
+                            active_count = stats_data.get("active_users_count", 0)
+                            total_count = stats_data.get("total_users", 1)
+                            active_pct = (active_count / total_count * 100) if total_count > 0 else 0
+                            st.metric("Active Users", f"{active_count} / {total_count}", f"{active_pct:.1f}%")
+                        with engage_col2:
+                            avg_docs = stats_data.get("total_documents", 0) / active_count if active_count > 0 else 0
+                            st.metric("Avg Documents per Active User", f"{avg_docs:.1f}")
                         
                         st.markdown("---")
                         
-                        # Search/filter within results
-                        search_term = st.text_input("🔍 Search by user email or text content", "")
+                        # Recent user activity table
+                        st.markdown("### 📊 Recent User Activity (Top 10 Most Active)")
+                        recent_activity = stats_data.get("recent_activity", [])
                         
-                        # Filter entries based on search
-                        filtered_entries = entries
-                        if search_term:
-                            search_lower = search_term.lower()
-                            filtered_entries = [
-                                e for e in entries
-                                if search_lower in e.get("user_email", "").lower()
-                                or search_lower in e.get("original_text", "").lower()
-                                or search_lower in e.get("result_text", "").lower()
-                            ]
-                        
-                        st.markdown(f"### 📋 History Entries ({len(filtered_entries)} displayed)")
-                        
-                        # Display entries
-                        for idx, entry in enumerate(filtered_entries):
-                            entry_id = entry.get("id")
-                            entry_type = entry.get("type", "unknown")
-                            user_email = entry.get("user_email", "Unknown")
-                            user_name = entry.get("user_name", "Not set")
-                            model = entry.get("model", "Unknown")
-                            created_at = entry.get("created_at", "")
-                            original_text = entry.get("original_text", "")
-                            result_text = entry.get("result_text", "")
-                            parameters = entry.get("parameters", "")
-                            
-                            # Robust timestamp parsing (mirrors user History tab logic)
-                            created_raw = (created_at or "").strip()
-                            dt = None
+                        if recent_activity:
                             try:
-                                iso = created_raw.replace("Z", "+00:00")
-                                dt = datetime.fromisoformat(iso)
-                                if dt.tzinfo is not None:
-                                    dt = dt.astimezone()
-                            except Exception:
-                                dt = None
-                            if dt is None:
-                                for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                                import pandas as pd
+                                activity_data = []
+                                for activity in recent_activity:
+                                    last_activity = activity.get("last_activity", "")
+                                    # Parse timestamp
                                     try:
-                                        dt = datetime.strptime(created_raw, fmt)
-                                        from datetime import timezone as dt_tz
-                                        dt = dt.replace(tzinfo=dt_tz.utc).astimezone()
-                                        break
+                                        iso = last_activity.replace("Z", "+00:00") if isinstance(last_activity, str) else str(last_activity)
+                                        dt = datetime.fromisoformat(iso)
+                                        last_activity_str = dt.strftime("%b %d, %Y %I:%M %p")
                                     except Exception:
-                                        continue
-                            if dt is None:
-                                from datetime import timezone as dt_tz
-                                dt = datetime.utcnow().replace(tzinfo=dt_tz.utc).astimezone()
-                            if dt.tzinfo is None:
-                                from datetime import timezone as dt_tz
-                                dt = dt.replace(tzinfo=dt_tz.utc).astimezone()
-                            # Friendly format (same as history tab): 'Month DD, YYYY at HH:MM AM/PM'
-                            created_at_str = dt.strftime("%B %d, %Y at %I:%M %p")
+                                        last_activity_str = str(last_activity)
+                                    
+                                    activity_data.append({
+                                        "User Email": activity.get("user_email", ""),
+                                        "Name": activity.get("user_name", "Not set"),
+                                        "Summaries": activity.get("total_summaries", 0),
+                                        "Paraphrases": activity.get("total_paraphrases", 0),
+                                        "Total": activity.get("total_summaries", 0) + activity.get("total_paraphrases", 0),
+                                        "Last Activity": last_activity_str
+                                    })
+                                
+                                df_activity = pd.DataFrame(activity_data)
+                                st.dataframe(df_activity, use_container_width=True, hide_index=True)
+                            except Exception as e:
+                                st.warning(f"Could not display activity table: {e}")
+                                for activity in recent_activity:
+                                    st.write(f"**{activity.get('user_email')}**: {activity.get('total_summaries', 0)} summaries, {activity.get('total_paraphrases', 0)} paraphrases")
+                        else:
+                            st.info("No user activity found.")
+                        
+                        # What texts are uploaded section
+                        st.markdown("---")
+                        st.markdown("### 📄 Uploaded Texts Overview")
+                        st.info("To view uploaded texts in detail, switch to the **History & Edit** tab and use the search functionality.")
+                
+                # ==================== TAB 2: HISTORY & EDIT ====================
+                with admin_tab2:
+                    st.markdown("### 📋 History Management")
+                    
+                    # Filter controls
+                    col1, col2, col3 = st.columns([2, 2, 1])
+                    with col1:
+                        type_filter = st.selectbox(
+                            "Filter by Type",
+                            options=["All", "Summary", "Paraphrase"],
+                            index=0,
+                            key="admin_type_filter"
+                        )
+                    with col2:
+                        limit = st.number_input("Max entries to display", min_value=10, max_value=5000, value=100, step=10, key="admin_limit")
+                    with col3:
+                        refresh_btn = st.button("🔄 Refresh", use_container_width=True, key="admin_refresh")
+                    
+                    # Fetch all history entries
+                    query_params = f"?limit={limit}"
+                    if type_filter != "All":
+                        query_params += f"&type_filter={type_filter.lower()}"
+                    
+                    with st.spinner("Loading all history entries..."):
+                        ok, data = api_get(f"/admin/history{query_params}", token=token)
+                    
+                    if not ok:
+                        st.error(f"❌ Failed to fetch history: {data}")
+                        if "403" in str(data) or "forbidden" in str(data).lower():
+                            st.warning("Your access was denied. Please ensure your account has the correct role.")
+                    elif not isinstance(data, dict):
+                        st.error(f"Unexpected response format: {data}")
+                    else:
+                        entries = data.get("entries", [])
+                        total_count = data.get("total_count", 0)
+                        
+                        if not entries:
+                            st.info("No history entries found.")
+                        else:
+                            # Display summary statistics
+                            st.markdown("#### 📊 Quick Stats")
+                            stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
                             
-                            # Color code by type
-                            type_color = "#6366f1" if entry_type == "summary" else "#8b5cf6"
-                            type_icon = "📝" if entry_type == "summary" else "✏️"
+                            summaries_count = len([e for e in entries if e.get("type") == "summary"])
+                            paraphrases_count = len([e for e in entries if e.get("type") == "paraphrase"])
+                            unique_users = len(set(e.get("user_email") for e in entries if e.get("user_email")))
                             
-                            with st.expander(f"{type_icon} **{entry_type.title()}** by {user_email} | {created_at_str}", expanded=False):
-                                detail_col1, detail_col2 = st.columns([1, 2])
-                                with detail_col1:
-                                    st.markdown(f"**Entry ID:** {entry_id}")
-                                    st.markdown(f"**User:** {user_email}")
-                                    st.markdown(f"**Name:** {user_name}")
-                                    st.markdown(f"**Model:** {model}")
-                                    st.markdown(f"**Type:** {entry_type}")
-                                    st.markdown(f"**Created:** {created_at_str}")
-                                    if parameters:
+                            with stat_col1:
+                                st.metric("Total Entries", total_count)
+                            with stat_col2:
+                                st.metric("Summaries", summaries_count)
+                            with stat_col3:
+                                st.metric("Paraphrases", paraphrases_count)
+                            with stat_col4:
+                                st.metric("Unique Users", unique_users)
+                            
+                            st.markdown("---")
+                            
+                            # Search/filter within results
+                            search_term = st.text_input("🔍 Search by user email or text content", "", key="admin_search")
+                            
+                            # Filter entries based on search
+                            filtered_entries = entries
+                            if search_term:
+                                search_lower = search_term.lower()
+                                filtered_entries = [
+                                    e for e in entries
+                                    if search_lower in e.get("user_email", "").lower()
+                                    or search_lower in e.get("original_text", "").lower()
+                                    or search_lower in e.get("result_text", "").lower()
+                                ]
+                            
+                            st.markdown(f"#### 📝 History Entries ({len(filtered_entries)} displayed)")
+                            
+                            # Initialize edit mode session state
+                            if 'editing_entry' not in st.session_state:
+                                st.session_state['editing_entry'] = None
+                            
+                            # Display entries
+                            for idx, entry in enumerate(filtered_entries):
+                                entry_id = entry.get("id")
+                                entry_type = entry.get("type", "unknown")
+                                user_email = entry.get("user_email", "Unknown")
+                                user_name = entry.get("user_name", "Not set")
+                                model = entry.get("model", "Unknown")
+                                created_at = entry.get("created_at", "")
+                                original_text = entry.get("original_text", "")
+                                result_text = entry.get("result_text", "")
+                                parameters = entry.get("parameters", "")
+                                
+                                # Robust timestamp parsing
+                                created_raw = (created_at or "").strip()
+                                dt = None
+                                try:
+                                    iso = created_raw.replace("Z", "+00:00")
+                                    dt = datetime.fromisoformat(iso)
+                                    if dt.tzinfo is not None:
+                                        dt = dt.astimezone()
+                                except Exception:
+                                    dt = None
+                                if dt is None:
+                                    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
                                         try:
-                                            params_dict = json.loads(parameters)
-                                            st.markdown(f"**Parameters:** {params_dict}")
+                                            dt = datetime.strptime(created_raw, fmt)
+                                            from datetime import timezone as dt_tz
+                                            dt = dt.replace(tzinfo=dt_tz.utc).astimezone()
+                                            break
                                         except Exception:
-                                            st.markdown(f"**Parameters:** {parameters}")
-                                with detail_col2:
-                                    st.text_area("Original Text", value=original_text, height=150, key=f"admin_orig_{entry_id}_{idx}", disabled=True)
-                                    st.text_area(f"{entry_type.title()} Result", value=result_text, height=150, key=f"admin_result_{entry_id}_{idx}", disabled=True)
-                                orig_words = len(original_text.split())
-                                result_words = len(result_text.split())
-                                reduction = ((orig_words - result_words) / orig_words * 100) if orig_words > 0 else 0
-                                stat_info = f"📊 **Statistics:** Original: {orig_words} words | Result: {result_words} words"
-                                if entry_type == "summary":
-                                    stat_info += f" | Reduction: {reduction:.1f}%"
-                                st.markdown(stat_info)
+                                            continue
+                                if dt is None:
+                                    from datetime import timezone as dt_tz
+                                    dt = datetime.utcnow().replace(tzinfo=dt_tz.utc).astimezone()
+                                if dt.tzinfo is None:
+                                    from datetime import timezone as dt_tz
+                                    dt = dt.replace(tzinfo=dt_tz.utc).astimezone()
+                                created_at_str = dt.strftime("%B %d, %Y at %I:%M %p")
+                                
+                                # Type styling
+                                type_icon = "📝" if entry_type == "summary" else "✏️"
+                                
+                                with st.expander(f"{type_icon} **{entry_type.title()}** by {user_email} | {created_at_str}", expanded=False):
+                                    detail_col1, detail_col2 = st.columns([1, 2])
+                                    with detail_col1:
+                                        st.markdown(f"**Entry ID:** {entry_id}")
+                                        st.markdown(f"**User:** {user_email}")
+                                        st.markdown(f"**Name:** {user_name}")
+                                        st.markdown(f"**Model:** {model}")
+                                        st.markdown(f"**Type:** {entry_type}")
+                                        st.markdown(f"**Created:** {created_at_str}")
+                                        if parameters:
+                                            try:
+                                                params_dict = json.loads(parameters)
+                                                st.markdown(f"**Parameters:** {params_dict}")
+                                            except Exception:
+                                                st.markdown(f"**Parameters:** {parameters}")
+                                    
+                                    with detail_col2:
+                                        st.text_area("Original Text", value=original_text, height=150, key=f"admin_orig_{entry_id}_{idx}", disabled=True)
+                                        
+                                        # Check if this entry is being edited
+                                        is_editing = st.session_state.get('editing_entry') == entry_id
+                                        
+                                        if is_editing:
+                                            # Show editable text area
+                                            edited_text = st.text_area(
+                                                f"{entry_type.title()} Result (Editing)",
+                                                value=result_text,
+                                                height=150,
+                                                key=f"admin_edit_{entry_id}_{idx}"
+                                            )
+                                            
+                                            # Save and Cancel buttons
+                                            save_col, cancel_col = st.columns([1, 1])
+                                            with save_col:
+                                                if st.button("💾 Save Changes", key=f"save_{entry_id}_{idx}", use_container_width=True):
+                                                    # Send update to backend
+                                                    update_payload = {"result_text": edited_text}
+                                                    ok_update, update_result = api_put(
+                                                        f"/admin/history/{entry_id}",
+                                                        update_payload,
+                                                        token=token
+                                                    )
+                                                    
+                                                    if ok_update:
+                                                        st.success("✅ Entry updated successfully!")
+                                                        st.session_state['editing_entry'] = None
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(f"❌ Failed to update: {update_result}")
+                                            
+                                            with cancel_col:
+                                                if st.button("❌ Cancel", key=f"cancel_{entry_id}_{idx}", use_container_width=True):
+                                                    st.session_state['editing_entry'] = None
+                                                    st.rerun()
+                                        else:
+                                            # Show read-only text area
+                                            st.text_area(
+                                                f"{entry_type.title()} Result",
+                                                value=result_text,
+                                                height=150,
+                                                key=f"admin_result_{entry_id}_{idx}",
+                                                disabled=True
+                                            )
+                                            
+                                            # Edit button
+                                            if st.button("✏️ Edit", key=f"edit_btn_{entry_id}_{idx}"):
+                                                st.session_state['editing_entry'] = entry_id
+                                                st.rerun()
+                                    
+                                    # Statistics
+                                    orig_words = len(original_text.split())
+                                    result_words = len(result_text.split())
+                                    reduction = ((orig_words - result_words) / orig_words * 100) if orig_words > 0 else 0
+                                    stat_info = f"📊 **Statistics:** Original: {orig_words} words | Result: {result_words} words"
+                                    if entry_type == "summary":
+                                        stat_info += f" | Reduction: {reduction:.1f}%"
+                                    st.markdown(stat_info)
 
 
 # Global footer
