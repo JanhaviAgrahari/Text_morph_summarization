@@ -37,6 +37,7 @@ class UserOut(BaseModel):
     name: str | None
     age_group: str | None
     language: str | None
+    role: str = "user"
 
     class Config:
         from_attributes = True
@@ -146,3 +147,25 @@ class CreateHistoryByEmail(BaseModel):
     result_text: str
     model: str
     parameters: str | None = None
+
+
+# Admin-only schema with user details
+class AdminHistoryEntry(BaseModel):
+    id: int
+    user_id: int
+    user_email: str
+    user_name: str | None
+    type: str  # 'summary' or 'paraphrase'
+    original_text: str
+    result_text: str
+    model: str
+    created_at: datetime
+    parameters: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class AdminHistoryResponse(BaseModel):
+    entries: list[AdminHistoryEntry]
+    total_count: int

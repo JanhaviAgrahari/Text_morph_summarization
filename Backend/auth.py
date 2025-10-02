@@ -60,3 +60,20 @@ def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+
+def require_role(allowed_roles: list[str]):
+    """Dependency factory to restrict endpoints to specific roles."""
+    def role_checker(current_user: models.User = Depends(get_current_user)):
+        if current_user.role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Required roles: {', '.join(allowed_roles)}"
+            )
+        return current_user
+    return role_checker
+
+
+# Convenience dependencies for common role checks
+require_admin = require_role(["admin"])
+require_mentor_or_admin = require_role(["mentor", "admin"])

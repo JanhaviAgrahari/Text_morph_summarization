@@ -319,11 +319,12 @@ tabs = st.tabs([
     "📊 Readability",
     "📝 Summarization",
     "✏️ Paraphrasing",
-    "� Fine-tuned Summarization",
+    "📚 Fine-tuned Summarization",
     "📚 Summarization Dataset Eval",
     "✏️ Fine-tuned Paraphrasing",
     "📚 Paraphrase Dataset Eval",
-    "�📚 History",  # moved to last
+    "📚 History",
+    "👨‍💼 Admin Panel",  # New admin tab
 ])
 
 # Sign in tab
@@ -771,10 +772,15 @@ with tabs[5]:  # Tab 5 - Summarization
         st.session_state['last_summary'] = None
         st.session_state['last_model'] = None
         st.session_state['last_length'] = None
+    
+    # Initialize session state to prevent duplicate submissions
+    if 'summary_processing' not in st.session_state:
+        st.session_state['summary_processing'] = False
 
-    generate_clicked = st.button("Generate Summary")
+    generate_clicked = st.button("Generate Summary", disabled=st.session_state.get('summary_processing', False))
 
-    if generate_clicked:
+    if generate_clicked and not st.session_state.get('summary_processing', False):
+        st.session_state['summary_processing'] = True
         if (input_type == "Plain Text" and not text_input.strip()) or (input_type == "PDF File" and not pdf_file):
             st.error("Please provide text or upload a PDF.")
         else:
@@ -1080,6 +1086,9 @@ with tabs[5]:  # Tab 5 - Summarization
             
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
+                finally:
+                    # Reset the processing flag to allow next submission
+                    st.session_state['summary_processing'] = False
 
 
 # New Paraphrasing tab
@@ -1145,10 +1154,15 @@ with tabs[6]:  # Tab 6 - Paraphrasing
         st.session_state['paraphrase_original_analysis'] = None
     if 'paraphrase_visualizations' not in st.session_state:
         st.session_state['paraphrase_visualizations'] = None
+    
+    # Initialize session state to prevent duplicate submissions
+    if 'paraphrase_processing' not in st.session_state:
+        st.session_state['paraphrase_processing'] = False
 
-    paraphrase_clicked = st.button("Paraphrase")
+    paraphrase_clicked = st.button("Paraphrase", disabled=st.session_state.get('paraphrase_processing', False))
 
-    if paraphrase_clicked:
+    if paraphrase_clicked and not st.session_state.get('paraphrase_processing', False):
+        st.session_state['paraphrase_processing'] = True
         if (p_input_type == "Plain Text" and not p_text_input.strip()) or (p_input_type == "PDF File" and not p_pdf_file):
             st.error("Please provide text or upload a PDF.")
         else:
@@ -1189,20 +1203,24 @@ with tabs[6]:  # Tab 6 - Paraphrasing
             }
 
             with st.spinner("Generating paraphrases... (first run may take a few minutes while the model loads)"):
-                ok, data = api_post("/paraphrase/", payload, token=token, timeout=600)
-                if not ok:
-                    st.error(data)
-                else:
-                    st.success("Paraphrases generated successfully!")
-                    # Persist results in session state for later ROUGE evaluation reruns
-                    st.session_state['paraphrase_results'] = data.get("paraphrased_results", [])
-                    st.session_state['paraphrase_original_analysis'] = data.get("original_text_analysis")
-                    st.session_state['paraphrase_visualizations'] = data.get("visualizations", {})
-                    st.session_state['paraphrase_original_text'] = original_text_display
-                    st.session_state['paraphrase_text_for_backend'] = text_for_backend
-                    st.session_state['paraphrase_model'] = p_model
-                    st.session_state['paraphrase_length'] = p_length
-                    st.session_state['paraphrase_creativity'] = float(p_creativity)
+                try:
+                    ok, data = api_post("/paraphrase/", payload, token=token, timeout=600)
+                    if not ok:
+                        st.error(data)
+                    else:
+                        st.success("Paraphrases generated successfully!")
+                        # Persist results in session state for later ROUGE evaluation reruns
+                        st.session_state['paraphrase_results'] = data.get("paraphrased_results", [])
+                        st.session_state['paraphrase_original_analysis'] = data.get("original_text_analysis")
+                        st.session_state['paraphrase_visualizations'] = data.get("visualizations", {})
+                        st.session_state['paraphrase_original_text'] = original_text_display
+                        st.session_state['paraphrase_text_for_backend'] = text_for_backend
+                        st.session_state['paraphrase_model'] = p_model
+                        st.session_state['paraphrase_length'] = p_length
+                        st.session_state['paraphrase_creativity'] = float(p_creativity)
+                finally:
+                    # Reset the processing flag to allow next submission
+                    st.session_state['paraphrase_processing'] = False
 
     # ---------------- Display Stored Paraphrase Results (if any) ----------------
     if st.session_state['paraphrase_results']:
@@ -1414,280 +1432,277 @@ with tabs[8]:
 
     if selected_df is not None:
         df = selected_df
-        if df is not None:
-            # Validate columns
-            expected_cols = {"article", "highlights"}
-            if not expected_cols.issubset(set(c.lower() for c in df.columns)):
-                st.error("CSV must contain columns: article, highlights")
-            else:
-                # Normalize column names
-                lower_map = {c.lower(): c for c in df.columns}
-                art_col = lower_map["article"]
-                ref_col = lower_map["highlights"]
-                df = df[[art_col, ref_col]].rename(columns={art_col: "article", ref_col: "reference"})
+        # Validate columns
+        expected_cols = {"article", "highlights"}
+        if not expected_cols.issubset(set(c.lower() for c in df.columns)):
+            st.error("CSV must contain columns: article, highlights")
+        else:
+            # Normalize column names
+            lower_map = {c.lower(): c for c in df.columns}
+            art_col = lower_map["article"]
+            ref_col = lower_map["highlights"]
+            df = df[[art_col, ref_col]].rename(columns={art_col: "article", ref_col: "reference"})
 
-                # Row range selection (1-based, inclusive)
-                total_rows = len(df)
-                c_start, c_end = st.columns(2)
-                with c_start:
-                    start_row = st.number_input(
-                        "Start row", min_value=1, max_value=max(1, total_rows), value=1, step=1,
-                        help="1-based index of the first row to evaluate."
-                    )
-                with c_end:
-                    default_end = min(total_rows, int(start_row) + 19)
-                    end_row = st.number_input(
-                        "End row (inclusive)", min_value=int(start_row), max_value=max(1, total_rows), value=default_end, step=1,
-                        help="1-based index of the last row to evaluate (inclusive)."
-                    )
-                st.caption("Tip: Indices are 1-based and inclusive. Example: 1–100 evaluates the first 100 rows.")
-
-                # Apply slicing safely (convert to 0-based, end exclusive)
-                s_idx = max(0, int(start_row) - 1)
-                e_idx = min(total_rows, int(end_row))
-                if s_idx >= e_idx:
-                    st.error("Start row must be less than or equal to End row.")
-                    st.stop()
-                df = df.iloc[s_idx:e_idx].copy()
-
-                # Model selection for fine-tuned summarization
-                model_choice_ds = st.selectbox(
-                    "Model",
-                    options=["T5-small", "BART-base"],
-                    index=0,
-                    key="ds_model_choice",
-                    help="Choose which fine-tuned model to use for generating summaries."
+            # Row range selection (1-based, inclusive)
+            total_rows = len(df)
+            c_start, c_end = st.columns(2)
+            with c_start:
+                start_row = st.number_input(
+                    "Start row", min_value=1, max_value=max(1, total_rows), value=1, step=1,
+                    help="1-based index of the first row to evaluate."
                 )
+            with c_end:
+                default_end = min(total_rows, int(start_row) + 19)
+                end_row = st.number_input(
+                    "End row (inclusive)", min_value=int(start_row), max_value=max(1, total_rows), value=default_end, step=1,
+                    help="1-based index of the last row to evaluate (inclusive)."
+                )
+            st.caption("Tip: Indices are 1-based and inclusive. Example: 1–100 evaluates the first 100 rows.")
 
-                show_pills([
-                    (f"Rows: {int(start_row)}–{int(end_row)} ({len(df)} samples)", "info"),
-                    (f"Model: {model_choice_ds}", "acc"),
-                    ("Eval: BLEU/PPL/Readability/ROUGE", "ok")
-                ])
-                st.caption("Click 'Run Evaluation' to generate summaries and compute metrics.")
-                run = st.button("Run Evaluation", type="primary")
+            # Apply slicing safely (convert to 0-based, end exclusive)
+            s_idx = max(0, int(start_row) - 1)
+            e_idx = min(total_rows, int(end_row))
+            if s_idx >= e_idx:
+                st.error("Start row must be less than or equal to End row.")
+                st.stop()
+            df = df.iloc[s_idx:e_idx].copy()
 
-                if run:
-                    results = []
-                    prog = st.progress(0)
-                    for i, (idx, row) in enumerate(df.iterrows(), start=1):
-                        article = str(row["article"]) if not pd.isna(row["article"]) else ""
-                        reference = str(row["reference"]) if not pd.isna(row["reference"]) else ""
-                        if not article or not reference:
-                            continue
-                        try:
-                            # Summarize via backend fine-tuned model
-                            form = {
-                                "summary_length": "medium",
-                                "input_type": "text",
-                                "text_input": article,
-                                "model_choice": ("t5" if model_choice_ds == "T5-small" else "bart"),
-                            }
-                            resp = requests.post(f"{BACKEND_URL}/summarize/fine-tuned/", data=form, timeout=120)
-                            resp.raise_for_status()
-                            gen = resp.json().get("summary", "")
+            # Model selection for fine-tuned summarization
+            model_choice_ds = st.selectbox(
+                "Model",
+                options=["T5-small", "BART-base"],
+                index=0,
+                key="ds_model_choice",
+                help="Choose which fine-tuned model to use for generating summaries."
+            )
 
-                            # Metrics
-                            metrics_payload = {
-                                "reference": reference,
-                                "candidate": gen,
-                                "original_text": article,
-                            }
-                            mresp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
-                            mjson = mresp.json()
+            show_pills([
+                (f"Rows: {int(start_row)}–{int(end_row)} ({len(df)} samples)", "info"),
+                (f"Model: {model_choice_ds}", "acc"),
+                ("Eval: BLEU/PPL/Readability/ROUGE", "ok")
+            ])
+            st.caption("Click 'Run Evaluation' to generate summaries and compute metrics.")
+            run = st.button("Run Evaluation", type="primary")
 
-                            # Extract key metrics safely
-                            def _get(d, path, default=None):
-                                cur = d
-                                try:
-                                    for p in path:
-                                        cur = cur[p]
-                                    return cur
-                                except Exception:
-                                    return default
+            if run:
+                results = []
+                prog = st.progress(0)
+                for i, (idx, row) in enumerate(df.iterrows(), start=1):
+                    article = str(row["article"]) if not pd.isna(row["article"]) else ""
+                    reference = str(row["reference"]) if not pd.isna(row["reference"]) else ""
+                    if not article or not reference:
+                        continue
+                    try:
+                        # Summarize via backend fine-tuned model
+                        form = {
+                            "summary_length": "medium",
+                            "input_type": "text",
+                            "text_input": article,
+                            "model_choice": ("t5" if model_choice_ds == "T5-small" else "bart"),
+                        }
+                        resp = requests.post(f"{BACKEND_URL}/summarize/fine-tuned/", data=form, timeout=120)
+                        resp.raise_for_status()
+                        gen = resp.json().get("summary", "")
 
-                            # ROUGE scores (F1) via backend
+                        # Metrics
+                        metrics_payload = {
+                            "reference": reference,
+                            "candidate": gen,
+                            "original_text": article,
+                        }
+                        mresp = requests.post(f"{BACKEND_URL}/evaluate/metrics", json=metrics_payload, timeout=120)
+                        mjson = mresp.json()
+
+                        # Extract key metrics safely
+                        def _get(d, path, default=None):
+                            cur = d
                             try:
-                                r_payload = {"reference": reference, "candidate": gen}
-                                r_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=r_payload, timeout=60)
-                                r_json = r_resp.json() if r_resp.ok else {}
-                                r_scores = r_json.get("scores", {}) if isinstance(r_json, dict) else {}
-                                r1_f1 = float(r_scores.get("rouge1", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rouge1", {}), dict) else float("nan")
-                                r2_f1 = float(r_scores.get("rouge2", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rouge2", {}), dict) else float("nan")
-                                rL_f1 = float(r_scores.get("rougeL", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rougeL", {}), dict) else float("nan")
+                                for p in path:
+                                    cur = cur[p]
+                                return cur
                             except Exception:
-                                r1_f1 = r2_f1 = rL_f1 = float("nan")
+                                return default
 
-                            row_out = {
-                                "index": idx,
-                                "article": article,
-                                "generated": gen,
-                                "reference": reference,
-                                # BLEU
-                                "bleu_1": _get(mjson, ["bleu", "bleu_1"], float("nan")),
-                                "bleu_2": _get(mjson, ["bleu", "bleu_2"], float("nan")),
-                                "bleu_3": _get(mjson, ["bleu", "bleu_3"], float("nan")),
-                                "bleu_4": _get(mjson, ["bleu", "bleu_4"], float("nan")),
-                                "bleu": _get(mjson, ["bleu", "bleu"], float("nan")),
-                                # ROUGE (F1)
-                                "rouge1_f1": r1_f1,
-                                "rouge2_f1": r2_f1,
-                                "rougeL_f1": rL_f1,
-                                # Perplexities
-                                "ppl_candidate": _get(mjson, ["perplexity_candidate", "perplexity"], _get(mjson, ["perplexity", "perplexity"], float("nan"))),
-                                "ppl_reference": _get(mjson, ["perplexity_reference", "perplexity"], float("nan")),
-                                # Readability deltas
-                                "delta_flesch_reading_ease": _get(mjson, ["readability_ref_candidate", "delta", "flesch_reading_ease"], float("nan")),
-                                "delta_flesch_kincaid": _get(mjson, ["readability_ref_candidate", "delta", "flesch_kincaid_grade"], float("nan")),
-                                "delta_gunning_fog": _get(mjson, ["readability_ref_candidate", "delta", "gunning_fog"], float("nan")),
-                                "delta_smog_index": _get(mjson, ["readability_ref_candidate", "delta", "smog_index"], float("nan")),
-                            }
-                            results.append(row_out)
-                        except Exception as e:
-                            st.warning(f"Row {idx} failed: {e}")
-                        finally:
-                            prog.progress(min(i / len(df), 1.0))
-
-                    if results:
-                        rdf = pd.DataFrame(results)
-                        st.success("Evaluation complete.")
-
-                        # Side-by-side viewer for first few samples
-                        st.markdown("### Sample Results")
-                        sample_n = min(5, len(rdf))
-                        for i in range(sample_n):
-                            r = rdf.iloc[i]
-                            st.markdown(f"#### Sample #{int(r['index'])}")
-                            c1, c2, c3 = st.columns(3)
-                            with c1:
-                                st.markdown("**Article**")
-                                st.write(r["article"])
-                            with c2:
-                                st.markdown("**Generated Summary**")
-                                st.write(r["generated"])
-                            with c3:
-                                st.markdown("**Reference Summary**")
-                                st.write(r["reference"])
-                            m1, m2, m3 = st.columns(3)
-                            with m1:
-                                st.metric("BLEU-1", f"{r['bleu_1']:.4f}" if pd.notna(r['bleu_1']) else "-")
-                                st.metric("BLEU-4", f"{r['bleu_4']:.4f}" if pd.notna(r['bleu_4']) else "-")
-                            with m2:
-                                st.metric("PPL (gen)", f"{r['ppl_candidate']:.2f}" if pd.notna(r['ppl_candidate']) else "-")
-                                st.metric("PPL (ref)", f"{r['ppl_reference']:.2f}" if pd.notna(r['ppl_reference']) else "-")
-                            with m3:
-                                st.metric("Δ Flesch Ease (gen-ref)", f"{r['delta_flesch_reading_ease']:+.2f}" if pd.notna(r['delta_flesch_reading_ease']) else "-")
-                                st.metric("Δ SMOG (gen-ref)", f"{r['delta_smog_index']:+.2f}" if pd.notna(r['delta_smog_index']) else "-")
-                            st.divider()
-
-                        # Download full results
-                        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                        out_csv = rdf.to_csv(index=False).encode("utf-8")
-                        st.download_button(
-                            label="Download Results CSV",
-                            data=out_csv,
-                            file_name=f"eval_results_{ts}.csv",
-                            mime="text/csv",
-                        )
-
-                        # Aggregate metrics
-                        st.markdown("### Aggregates")
-                        agg = rdf[[
-                            "bleu_1","bleu_2","bleu_3","bleu_4","bleu",
-                            "rouge1_f1","rouge2_f1","rougeL_f1",
-                            "ppl_candidate","ppl_reference",
-                            "delta_flesch_reading_ease","delta_flesch_kincaid","delta_gunning_fog","delta_smog_index"
-                        ]].mean(numeric_only=True)
-                        st.dataframe(agg.to_frame("mean").round(4))
-
-                        # --- Visualizations ---
-                        st.markdown("### Visualizations")
+                        # ROUGE scores (F1) via backend
                         try:
-                            import pandas as pd  # ensure available in this scope
-                            if plt is None:
-                                st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
-                            else:
-                                # 1) BLEU grouped bar
-                                bleu_cols = ["bleu_1","bleu_2","bleu_3","bleu_4","bleu"]
-                                bleu_vals = [float(agg.get(c, float('nan'))) for c in bleu_cols]
-                                bleu_vals = [0.0 if pd.isna(v) else v for v in bleu_vals]
-                                fig1, ax1 = plt.subplots(figsize=(6, 3.0))
-                                x = list(range(len(bleu_cols))) if np is None else np.arange(len(bleu_cols))
-                                ax1.bar(x, bleu_vals, color="#3b82f6")
-                                ax1.set_xticks(x)
-                                ax1.set_xticklabels([c.upper() for c in bleu_cols])
-                                ax1.set_ylim(0, 1)
-                                ax1.set_ylabel("Score")
-                                ax1.set_title("Mean BLEU Scores")
-                                for xi, v in zip(x, bleu_vals):
-                                    ax1.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
-                                # defer rendering; will place in columns
+                            r_payload = {"reference": reference, "candidate": gen}
+                            r_resp = requests.post(f"{BACKEND_URL}/evaluate/rouge", json=r_payload, timeout=60)
+                            r_json = r_resp.json() if r_resp.ok else {}
+                            r_scores = r_json.get("scores", {}) if isinstance(r_json, dict) else {}
+                            r1_f1 = float(r_scores.get("rouge1", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rouge1", {}), dict) else float("nan")
+                            r2_f1 = float(r_scores.get("rouge2", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rouge2", {}), dict) else float("nan")
+                            rL_f1 = float(r_scores.get("rougeL", {}).get("f1", float("nan"))) if isinstance(r_scores.get("rougeL", {}), dict) else float("nan")
+                        except Exception:
+                            r1_f1 = r2_f1 = rL_f1 = float("nan")
 
-                                # 1b) ROUGE (F1) grouped bar
-                                rouge_cols = ["rouge1_f1","rouge2_f1","rougeL_f1"]
-                                rouge_labels = ["ROUGE-1 F1","ROUGE-2 F1","ROUGE-L F1"]
-                                rouge_vals = [float(agg.get(c, float('nan'))) for c in rouge_cols]
-                                rouge_vals = [0.0 if pd.isna(v) else v for v in rouge_vals]
-                                fig1b, ax1b = plt.subplots(figsize=(6, 3.0))
-                                x1b = list(range(len(rouge_cols))) if np is None else np.arange(len(rouge_cols))
-                                ax1b.bar(x1b, rouge_vals, color="#06b6d4")
-                                ax1b.set_xticks(x1b)
-                                ax1b.set_xticklabels(rouge_labels)
-                                ax1b.set_ylim(0, 1)
-                                ax1b.set_ylabel("F1")
-                                ax1b.set_title("Mean ROUGE (F1)")
-                                for xi, v in zip(x1b, rouge_vals):
-                                    ax1b.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
-                                # defer rendering; will place in columns
+                        row_out = {
+                            "index": idx,
+                            "article": article,
+                            "generated": gen,
+                            "reference": reference,
+                            # BLEU
+                            "bleu_1": _get(mjson, ["bleu", "bleu_1"], float("nan")),
+                            "bleu_2": _get(mjson, ["bleu", "bleu_2"], float("nan")),
+                            "bleu_3": _get(mjson, ["bleu", "bleu_3"], float("nan")),
+                            "bleu_4": _get(mjson, ["bleu", "bleu_4"], float("nan")),
+                            "bleu": _get(mjson, ["bleu", "bleu"], float("nan")),
+                            # ROUGE (F1)
+                            "rouge1_f1": r1_f1,
+                            "rouge2_f1": r2_f1,
+                            "rougeL_f1": rL_f1,
+                            # Perplexities
+                            "ppl_candidate": _get(mjson, ["perplexity_candidate", "perplexity"], _get(mjson, ["perplexity", "perplexity"], float("nan"))),
+                            "ppl_reference": _get(mjson, ["perplexity_reference", "perplexity"], float("nan")),
+                            # Readability deltas
+                            "delta_flesch_reading_ease": _get(mjson, ["readability_ref_candidate", "delta", "flesch_reading_ease"], float("nan")),
+                            "delta_flesch_kincaid": _get(mjson, ["readability_ref_candidate", "delta", "flesch_kincaid_grade"], float("nan")),
+                            "delta_gunning_fog": _get(mjson, ["readability_ref_candidate", "delta", "gunning_fog"], float("nan")),
+                            "delta_smog_index": _get(mjson, ["readability_ref_candidate", "delta", "smog_index"], float("nan")),
+                        }
+                        results.append(row_out)
+                    except Exception as e:
+                        st.warning(f"Row {idx} failed: {e}")
+                    finally:
+                        prog.progress(min(i / len(df), 1.0))
 
-                                # 2) Perplexity bar
-                                ppl_cols = ["ppl_candidate","ppl_reference"]
-                                ppl_vals = [float(agg.get(c, float('nan'))) for c in ppl_cols]
-                                ppl_vals = [0.0 if pd.isna(v) else v for v in ppl_vals]
-                                fig2, ax2 = plt.subplots(figsize=(5.5, 3.0))
-                                x2 = list(range(len(ppl_cols))) if np is None else np.arange(len(ppl_cols))
-                                ax2.bar(x2, ppl_vals, color=["#10b981", "#f59e0b"])
-                                ax2.set_xticks(x2)
-                                ax2.set_xticklabels([c.replace("ppl_","PPL ").title() for c in ppl_cols])
-                                ax2.set_ylabel("Perplexity (lower is better)")
-                                ax2.set_title("Mean Perplexity")
-                                for xi, v in zip(x2, ppl_vals):
-                                    ax2.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+                if results:
+                    import pandas as pd
+                    rdf = pd.DataFrame(results)
+                    st.success("Evaluation complete.")
 
-                                # Render 4 charts in two columns (2 charts per column)
-                                cols = st.columns(2)
-                                with cols[0]:
-                                    st.pyplot(fig1, clear_figure=True)   # BLEU
-                                    st.pyplot(fig1b, clear_figure=True)  # ROUGE F1
-                                with cols[1]:
-                                    st.pyplot(fig2, clear_figure=True)   # Perplexity
+                    # Side-by-side viewer for first few samples
+                    st.markdown("### Sample Results")
+                    sample_n = min(5, len(rdf))
+                    for i in range(sample_n):
+                        r = rdf.iloc[i]
+                        st.markdown(f"#### Sample #{int(r['index'])}")
+                        c1, c2, c3 = st.columns(3)
+                        with c1:
+                            st.markdown("**Article**")
+                            st.write(r["article"])
+                        with c2:
+                            st.markdown("**Generated Summary**")
+                            st.write(r["generated"])
+                        with c3:
+                            st.markdown("**Reference Summary**")
+                            st.write(r["reference"])
+                        m1, m2, m3 = st.columns(3)
+                        with m1:
+                            st.metric("BLEU-1", f"{r['bleu_1']:.4f}" if pd.notna(r['bleu_1']) else "-")
+                            st.metric("BLEU-4", f"{r['bleu_4']:.4f}" if pd.notna(r['bleu_4']) else "-")
+                        with m2:
+                            st.metric("PPL (gen)", f"{r['ppl_candidate']:.2f}" if pd.notna(r['ppl_candidate']) else "-")
+                            st.metric("PPL (ref)", f"{r['ppl_reference']:.2f}" if pd.notna(r['ppl_reference']) else "-")
+                        with m3:
+                            st.metric("Δ Flesch Ease (gen-ref)", f"{r['delta_flesch_reading_ease']:+.2f}" if pd.notna(r['delta_flesch_reading_ease']) else "-")
+                            st.metric("Δ SMOG (gen-ref)", f"{r['delta_smog_index']:+.2f}" if pd.notna(r['delta_smog_index']) else "-")
+                        st.divider()
 
-                                # 3) Readability deltas bar
-                                read_cols = [
-                                    "delta_flesch_reading_ease","delta_flesch_kincaid",
-                                    "delta_gunning_fog","delta_smog_index"
-                                ]
-                                read_labels = ["Δ Flesch Ease","Δ F-K Grade","Δ Gunning Fog","Δ SMOG"]
-                                read_vals = [float(agg.get(c, float('nan'))) for c in read_cols]
-                                read_vals = [0.0 if pd.isna(v) else v for v in read_vals]
-                                fig3, ax3 = plt.subplots(figsize=(6, 3.0))
-                                x3 = list(range(len(read_cols))) if np is None else np.arange(len(read_cols))
-                                ax3.bar(x3, read_vals, color="#8b5cf6")
-                                ax3.set_xticks(x3)
-                                ax3.set_xticklabels(read_labels)
-                                ax3.axhline(0, color="#94a3b8", linewidth=1)
-                                ax3.set_ylabel("Delta (gen - ref)")
-                                ax3.set_title("Mean Readability Deltas")
-                                for xi, v in zip(x3, read_vals):
-                                    ax3.text(xi, v + (0.02 if v >= 0 else -0.02), f"{v:.2f}", ha='center', va='bottom' if v>=0 else 'top', fontsize=8)
-                                # Readability chart stacked below in right column
-                                with cols[1]:
-                                    st.pyplot(fig3, clear_figure=True)
+                    # Download full results
+                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    out_csv = rdf.to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        label="Download Results CSV",
+                        data=out_csv,
+                        file_name=f"eval_results_{ts}.csv",
+                        mime="text/csv",
+                    )
 
-                                # Removed BLEU-1 distribution histogram as requested
-                        except Exception as viz_e:
-                            st.info(f"Could not render charts: {viz_e}")
-                
+                    # Aggregate metrics
+                    st.markdown("### Aggregates")
+                    agg = rdf[[
+                        "bleu_1","bleu_2","bleu_3","bleu_4","bleu",
+                        "rouge1_f1","rouge2_f1","rougeL_f1",
+                        "ppl_candidate","ppl_reference",
+                        "delta_flesch_reading_ease","delta_flesch_kincaid","delta_gunning_fog","delta_smog_index"
+                    ]].mean(numeric_only=True)
+                    st.dataframe(agg.to_frame("mean").round(4))
+
+                    # --- Visualizations ---
+                    st.markdown("### Visualizations")
+                    try:
+                        import pandas as pd  # ensure available in this scope
+                        if plt is None:
+                            st.warning("matplotlib not installed; run 'pip install matplotlib' to view charts.")
+                        else:
+                            # 1) BLEU grouped bar
+                            bleu_cols = ["bleu_1","bleu_2","bleu_3","bleu_4","bleu"]
+                            bleu_vals = [float(agg.get(c, float('nan'))) for c in bleu_cols]
+                            bleu_vals = [0.0 if pd.isna(v) else v for v in bleu_vals]
+                            fig1, ax1 = plt.subplots(figsize=(6, 3.0))
+                            x = list(range(len(bleu_cols))) if np is None else np.arange(len(bleu_cols))
+                            ax1.bar(x, bleu_vals, color="#3b82f6")
+                            ax1.set_xticks(x)
+                            ax1.set_xticklabels([c.upper() for c in bleu_cols])
+                            ax1.set_ylim(0, 1)
+                            ax1.set_ylabel("Score")
+                            ax1.set_title("Mean BLEU Scores")
+                            for xi, v in zip(x, bleu_vals):
+                                ax1.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+
+                            # 1b) ROUGE (F1) grouped bar
+                            rouge_cols = ["rouge1_f1","rouge2_f1","rougeL_f1"]
+                            rouge_labels = ["ROUGE-1 F1","ROUGE-2 F1","ROUGE-L F1"]
+                            rouge_vals = [float(agg.get(c, float('nan'))) for c in rouge_cols]
+                            rouge_vals = [0.0 if pd.isna(v) else v for v in rouge_vals]
+                            fig1b, ax1b = plt.subplots(figsize=(6, 3.0))
+                            x1b = list(range(len(rouge_cols))) if np is None else np.arange(len(rouge_cols))
+                            ax1b.bar(x1b, rouge_vals, color="#06b6d4")
+                            ax1b.set_xticks(x1b)
+                            ax1b.set_xticklabels(rouge_labels)
+                            ax1b.set_ylim(0, 1)
+                            ax1b.set_ylabel("F1")
+                            ax1b.set_title("Mean ROUGE (F1)")
+                            for xi, v in zip(x1b, rouge_vals):
+                                ax1b.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+
+                            # 2) Perplexity bar
+                            ppl_cols = ["ppl_candidate","ppl_reference"]
+                            ppl_vals = [float(agg.get(c, float('nan'))) for c in ppl_cols]
+                            ppl_vals = [0.0 if pd.isna(v) else v for v in ppl_vals]
+                            fig2, ax2 = plt.subplots(figsize=(5.5, 3.0))
+                            x2 = list(range(len(ppl_cols))) if np is None else np.arange(len(ppl_cols))
+                            ax2.bar(x2, ppl_vals, color=["#10b981", "#f59e0b"])
+                            ax2.set_xticks(x2)
+                            ax2.set_xticklabels([c.replace("ppl_","PPL ").title() for c in ppl_cols])
+                            ax2.set_ylabel("Perplexity (lower is better)")
+                            ax2.set_title("Mean Perplexity")
+                            for xi, v in zip(x2, ppl_vals):
+                                ax2.text(xi, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=8)
+
+                            # Render charts
+                            cols = st.columns(2)
+                            with cols[0]:
+                                st.pyplot(fig1, clear_figure=True)
+                                st.pyplot(fig1b, clear_figure=True)
+                            with cols[1]:
+                                st.pyplot(fig2, clear_figure=True)
+
+                            # 3) Readability deltas bar
+                            read_cols = [
+                                "delta_flesch_reading_ease","delta_flesch_kincaid",
+                                "delta_gunning_fog","delta_smog_index"
+                            ]
+                            read_labels = ["Δ Flesch Ease","Δ F-K Grade","Δ Gunning Fog","Δ SMOG"]
+                            read_vals = [float(agg.get(c, float('nan'))) for c in read_cols]
+                            read_vals = [0.0 if pd.isna(v) else v for v in read_vals]
+                            fig3, ax3 = plt.subplots(figsize=(6, 3.0))
+                            x3 = list(range(len(read_cols))) if np is None else np.arange(len(read_cols))
+                            ax3.bar(x3, read_vals, color="#8b5cf6")
+                            ax3.set_xticks(x3)
+                            ax3.set_xticklabels(read_labels)
+                            ax3.axhline(0, color="#94a3b8", linewidth=1)
+                            ax3.set_ylabel("Delta (gen - ref)")
+                            ax3.set_title("Mean Readability Deltas")
+                            for xi, v in zip(x3, read_vals):
+                                ax3.text(xi, v + (0.02 if v >= 0 else -0.02), f"{v:.2f}", ha='center', va='bottom' if v>=0 else 'top', fontsize=8)
+                            with cols[1]:
+                                st.pyplot(fig3, clear_figure=True)
+                    except Exception as viz_e:
+                        st.info(f"Could not render charts: {viz_e}")
+
+
+
 
 # Simplified sidebar with essential information
 st.sidebar.markdown("""
@@ -1771,10 +1786,15 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
     if 'ft_last_summary' not in st.session_state:
         st.session_state['ft_last_summary'] = None
         st.session_state['ft_last_length'] = None
+    
+    # Initialize session state to prevent duplicate submissions
+    if 'ft_summary_processing' not in st.session_state:
+        st.session_state['ft_summary_processing'] = False
 
-    generate_clicked = st.button("Generate Summary", key="ft_generate_button")
+    generate_clicked = st.button("Generate Summary", key="ft_generate_button", disabled=st.session_state.get('ft_summary_processing', False))
 
-    if generate_clicked:
+    if generate_clicked and not st.session_state.get('ft_summary_processing', False):
+        st.session_state['ft_summary_processing'] = True
         if (input_type == "Plain Text" and not text_input.strip()) or (input_type == "PDF File" and not pdf_file):
             st.error("Please provide text or upload a PDF.")
         else:
@@ -1842,22 +1862,8 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
 
                         summary_text_display = result["summary"].strip()
 
-                        # Persist to history (original + result) for fine-tuned summarization
-                        try:
-                            email = st.session_state.get("user_email") or (st.session_state.get("me") or {}).get("email")
-                            original_for_history = original_text_display or (text_input.strip() if input_type == "Plain Text" else "")
-                            if email and original_for_history and summary_text_display:
-                                hist_payload = {
-                                    "email": email,
-                                    "type": "summary",
-                                    "original_text": original_for_history,
-                                    "result_text": summary_text_display,
-                                    "model": f"fine-tuned-{('t5' if model_choice == 'T5-small' else 'bart')}",
-                                    "parameters": json.dumps({"summary_length": summary_length}),
-                                }
-                                requests.post(f"{BACKEND_URL}/history", json=hist_payload, timeout=15)
-                        except Exception:
-                            pass
+                        # History persistence is handled server-side when user_email is sent.
+                        # (Removed duplicate client-side /history POST to prevent double inserts.)
 
                         # Persist core data for later (including language toggle use)
                         st.session_state['ft_last_summary'] = result["summary"]
@@ -1974,6 +1980,9 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
 
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
+                finally:
+                    # Reset the processing flag to allow next submission
+                    st.session_state['ft_summary_processing'] = False
 
     # Persistent display (after first generation) allowing language toggle
     if st.session_state.get('ft_last_summary') and not generate_clicked:
@@ -2556,32 +2565,7 @@ with tabs[9]:  # Tab 9 - Fine-tuned Paraphrasing
                     st.markdown("### Original vs Paraphrase")
                     _render_ftp_block()
 
-                    # Persist to history (original + result) for fine-tuned paraphrasing
-                    try:
-                        email = st.session_state.get("user_email") or (st.session_state.get("me") or {}).get("email")
-                        if email and source_text and first_paraphrase:
-                            hist_payload = {
-                                "email": email,
-                                "type": "paraphrase",
-                                "original_text": source_text,
-                                "result_text": first_paraphrase,
-                                "model": f"fine-tuned-{('t5' if model_choice == 'T5-small' else 'bart')}",
-                                "parameters": json.dumps({
-                                    "strategy": strategy,
-                                    "complexity": complexity,
-                                    "max_length": max_length,
-                                    "do_sample": do_sample,
-                                    "num_beams": num_beams,
-                                    "temperature": temperature,
-                                    "top_p": top_p,
-                                    "top_k": top_k,
-                                    "repetition_penalty": repetition_penalty,
-                                    "length_penalty": length_penalty,
-                                }),
-                            }
-                            requests.post(f"{BACKEND_URL}/history", json=hist_payload, timeout=15)
-                    except Exception:
-                        pass
+                    # History persistence handled on backend (removed duplicate /history POST).
 
                     # Reference-based evaluation removed for this tab
                 except Exception as e:
@@ -3129,6 +3113,172 @@ with tabs[10]:  # Tab 10 - Paraphrase Dataset Eval
                 except Exception as viz_e:
                     st.info(f"Could not render charts: {viz_e}")
 
+
+# -------------------- Admin Panel Tab --------------------
+with tabs[12]:  # Admin Panel (mentor/admin only)
+    st.markdown('<div class="tm-header"><h1>👨‍💼 Admin Panel</h1><p>View all user-generated summaries and paraphrases</p></div>', unsafe_allow_html=True)
+    
+    token = st.session_state.get("token")
+    if not token:
+        st.warning("⚠️ Please sign in to access the admin panel.")
+    else:
+        # Fetch current user info to check role
+        ok_me, me = api_get("/me", token=token)
+        if not ok_me or not isinstance(me, dict):
+            st.error("Failed to fetch user information.")
+        else:
+            user_role = me.get("role", "user")
+            user_email = me.get("email", "")
+            
+            # Check if user has admin or mentor role
+            if user_role not in ["admin", "mentor"]:
+                st.error("🚫 Access Denied")
+                st.warning(f"This page is only accessible to mentors and administrators. Your current role: **{user_role}**")
+                st.info("If you believe you should have access, please contact an administrator.")
+            else:
+                # User has proper access
+                st.success(f"✅ Welcome, {user_email} (Role: **{user_role}**)")
+                
+                # Filter controls
+                col1, col2, col3 = st.columns([2, 2, 1])
+                with col1:
+                    type_filter = st.selectbox(
+                        "Filter by Type",
+                        options=["All", "Summary", "Paraphrase"],
+                        index=0
+                    )
+                with col2:
+                    limit = st.number_input("Max entries to display", min_value=10, max_value=5000, value=100, step=10)
+                with col3:
+                    refresh_btn = st.button("🔄 Refresh", use_container_width=True)
+                
+                # Fetch all history entries
+                query_params = f"?limit={limit}"
+                if type_filter != "All":
+                    query_params += f"&type_filter={type_filter.lower()}"
+                
+                with st.spinner("Loading all history entries..."):
+                    ok, data = api_get(f"/admin/history{query_params}", token=token)
+                
+                if not ok:
+                    st.error(f"❌ Failed to fetch history: {data}")
+                    if "403" in str(data) or "forbidden" in str(data).lower():
+                        st.warning("Your access was denied. Please ensure your account has the correct role.")
+                elif not isinstance(data, dict):
+                    st.error(f"Unexpected response format: {data}")
+                else:
+                    entries = data.get("entries", [])
+                    total_count = data.get("total_count", 0)
+                    
+                    if not entries:
+                        st.info("No history entries found.")
+                    else:
+                        # Display summary statistics
+                        st.markdown("### 📊 Statistics")
+                        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+                        
+                        summaries_count = len([e for e in entries if e.get("type") == "summary"])
+                        paraphrases_count = len([e for e in entries if e.get("type") == "paraphrase"])
+                        unique_users = len(set(e.get("user_email") for e in entries if e.get("user_email")))
+                        
+                        with stat_col1:
+                            st.metric("Total Entries", total_count)
+                        with stat_col2:
+                            st.metric("Summaries", summaries_count)
+                        with stat_col3:
+                            st.metric("Paraphrases", paraphrases_count)
+                        with stat_col4:
+                            st.metric("Unique Users", unique_users)
+                        
+                        st.markdown("---")
+                        
+                        # Search/filter within results
+                        search_term = st.text_input("🔍 Search by user email or text content", "")
+                        
+                        # Filter entries based on search
+                        filtered_entries = entries
+                        if search_term:
+                            search_lower = search_term.lower()
+                            filtered_entries = [
+                                e for e in entries
+                                if search_lower in e.get("user_email", "").lower()
+                                or search_lower in e.get("original_text", "").lower()
+                                or search_lower in e.get("result_text", "").lower()
+                            ]
+                        
+                        st.markdown(f"### 📋 History Entries ({len(filtered_entries)} displayed)")
+                        
+                        # Display entries
+                        for idx, entry in enumerate(filtered_entries):
+                            entry_id = entry.get("id")
+                            entry_type = entry.get("type", "unknown")
+                            user_email = entry.get("user_email", "Unknown")
+                            user_name = entry.get("user_name", "Not set")
+                            model = entry.get("model", "Unknown")
+                            created_at = entry.get("created_at", "")
+                            original_text = entry.get("original_text", "")
+                            result_text = entry.get("result_text", "")
+                            parameters = entry.get("parameters", "")
+                            
+                            # Robust timestamp parsing (mirrors user History tab logic)
+                            created_raw = (created_at or "").strip()
+                            dt = None
+                            try:
+                                iso = created_raw.replace("Z", "+00:00")
+                                dt = datetime.fromisoformat(iso)
+                                if dt.tzinfo is not None:
+                                    dt = dt.astimezone()
+                            except Exception:
+                                dt = None
+                            if dt is None:
+                                for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                                    try:
+                                        dt = datetime.strptime(created_raw, fmt)
+                                        from datetime import timezone as dt_tz
+                                        dt = dt.replace(tzinfo=dt_tz.utc).astimezone()
+                                        break
+                                    except Exception:
+                                        continue
+                            if dt is None:
+                                from datetime import timezone as dt_tz
+                                dt = datetime.utcnow().replace(tzinfo=dt_tz.utc).astimezone()
+                            if dt.tzinfo is None:
+                                from datetime import timezone as dt_tz
+                                dt = dt.replace(tzinfo=dt_tz.utc).astimezone()
+                            # Friendly format (same as history tab): 'Month DD, YYYY at HH:MM AM/PM'
+                            created_at_str = dt.strftime("%B %d, %Y at %I:%M %p")
+                            
+                            # Color code by type
+                            type_color = "#6366f1" if entry_type == "summary" else "#8b5cf6"
+                            type_icon = "📝" if entry_type == "summary" else "✏️"
+                            
+                            with st.expander(f"{type_icon} **{entry_type.title()}** by {user_email} | {created_at_str}", expanded=False):
+                                detail_col1, detail_col2 = st.columns([1, 2])
+                                with detail_col1:
+                                    st.markdown(f"**Entry ID:** {entry_id}")
+                                    st.markdown(f"**User:** {user_email}")
+                                    st.markdown(f"**Name:** {user_name}")
+                                    st.markdown(f"**Model:** {model}")
+                                    st.markdown(f"**Type:** {entry_type}")
+                                    st.markdown(f"**Created:** {created_at_str}")
+                                    if parameters:
+                                        try:
+                                            params_dict = json.loads(parameters)
+                                            st.markdown(f"**Parameters:** {params_dict}")
+                                        except Exception:
+                                            st.markdown(f"**Parameters:** {parameters}")
+                                with detail_col2:
+                                    st.text_area("Original Text", value=original_text, height=150, key=f"admin_orig_{entry_id}_{idx}", disabled=True)
+                                    st.text_area(f"{entry_type.title()} Result", value=result_text, height=150, key=f"admin_result_{entry_id}_{idx}", disabled=True)
+                                orig_words = len(original_text.split())
+                                result_words = len(result_text.split())
+                                reduction = ((orig_words - result_words) / orig_words * 100) if orig_words > 0 else 0
+                                stat_info = f"📊 **Statistics:** Original: {orig_words} words | Result: {result_words} words"
+                                if entry_type == "summary":
+                                    stat_info += f" | Reduction: {reduction:.1f}%"
+                                st.markdown(stat_info)
+
+
 # Global footer
 st.markdown(
         """
@@ -3138,3 +3288,5 @@ st.markdown(
 """,
         unsafe_allow_html=True,
 )
+
+

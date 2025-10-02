@@ -1,7 +1,14 @@
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Enum
 from sqlalchemy.orm import relationship
 from .database import Base
-from datetime import datetime
+from datetime import datetime, timezone
+import enum as python_enum
+
+# Role enumeration for user access control
+class UserRole(str, python_enum.Enum):
+    USER = "user"
+    MENTOR = "mentor"
+    ADMIN = "admin"
 
 # ORM model representing application users
 class User(Base):
@@ -12,6 +19,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     # Hashed password (never store plaintext)
     password = Column(String, nullable=False)
+    # User role for access control (default: user)
+    role = Column(String, default="user", nullable=False, index=True)
     # Optional profile attributes saved via /profile endpoint
     name = Column(String, nullable=True)
     age_group = Column(String, nullable=True)
@@ -53,8 +62,8 @@ class History(Base):
     model = Column(String, nullable=False)
     # Parameters used (JSON string with model-specific settings)
     parameters = Column(String, nullable=True)
-    # Creation timestamp
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    # Creation timestamp (timezone-aware UTC)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     
     # Relationship to the user
     user = relationship("User", back_populates="history_entries")

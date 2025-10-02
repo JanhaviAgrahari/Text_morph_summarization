@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from . import models, schemas, crud
 from .database import engine, SessionLocal, Base, get_db
 from .emailer import send_password_reset_email
-from .auth import create_access_token, get_current_user
+from .auth import create_access_token, get_current_user, require_mentor_or_admin
 import json
 import os
 import logging
@@ -349,6 +349,31 @@ def create_history_by_email(payload: schemas.CreateHistoryByEmail, db: Session =
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    # --- Duplicate guard --------------------------------------------------
+    # Streamlit sometimes re-triggers requests on reruns causing back-to-back
+    # identical history inserts. We defensively look for an existing entry
+    # created in the last few seconds with the same (user, type, model, texts).
+    try:
+        from datetime import datetime, timedelta, timezone as _tz
+        window_start = datetime.now(_tz.utc) - timedelta(seconds=6)
+        existing = db.query(models.History) \
+            .filter(
+                models.History.user_id == user.id,
+                models.History.type == payload.type,
+                models.History.model == payload.model,
+                models.History.created_at >= window_start,
+            ) \
+            .order_by(models.History.created_at.desc()) \
+            .all()
+        norm_orig = (payload.original_text or "").strip()
+        norm_res = (payload.result_text or "").strip()
+        for e in existing:
+            if e.original_text.strip() == norm_orig and e.result_text.strip() == norm_res:
+                return {"id": e.id, "message": "Duplicate ignored", "duplicate": True}
+    except Exception:
+        # Fail open (still create) if any unexpected error in duplicate check
+        pass
+
     entry = schemas.CreateHistoryEntry(
         user_id=user.id,
         type=payload.type,
@@ -587,3 +612,49 @@ def paraphrase_endpoint(paraphrase_request: schemas.ParaphraseRequest, db: Sessi
     except Exception as e:
         logging.getLogger("uvicorn.error").exception("Paraphrase failed")
         raise HTTPException(status_code=500, detail=f"Failed to generate paraphrase: {e}")
+
+
+@app.get("/admin/history", response_model=schemas.AdminHistoryResponse)
+def get_all_user_history(
+    type_filter: str = None,
+    limit: int = 1000,
+    current_user: models.User = Depends(require_mentor_or_admin),
+    db: Session = Depends(get_db)
+):
+    """Get all history entries across all users (mentor/admin only).
+    
+    Args:
+        type_filter: Optional filter by type ('summary' or 'paraphrase')
+        limit: Maximum number of entries to return (default 1000)
+    
+    Returns:
+        AdminHistoryResponse with entries including user details
+    """
+    try:
+        # Get all history entries with user data
+        history_entries = crud.get_all_history(db, limit=limit, type_filter=type_filter)
+        
+        # Transform to AdminHistoryEntry format
+        admin_entries = []
+        for entry in history_entries:
+            admin_entry = schemas.AdminHistoryEntry(
+                id=entry.id,
+                user_id=entry.user_id,
+                user_email=entry.user.email,
+                user_name=entry.user.name,
+                type=entry.type,
+                original_text=entry.original_text,
+                result_text=entry.result_text,
+                model=entry.model,
+                created_at=entry.created_at,
+                parameters=entry.parameters
+            )
+            admin_entries.append(admin_entry)
+        
+        return schemas.AdminHistoryResponse(
+            entries=admin_entries,
+            total_count=len(admin_entries)
+        )
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Failed to fetch admin history")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch history: {e}")

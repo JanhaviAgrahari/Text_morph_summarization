@@ -15,10 +15,10 @@ def verify_password(plain_password, hashed_password):
     # Check user-provided password against stored hash
     return pwd_context.verify(plain_password, hashed_password)
 
-def create_user(db: Session, user: schemas.UserCreate):
-    # Create a new user with a hashed password
+def create_user(db: Session, user: schemas.UserCreate, role: str = "user"):
+    # Create a new user with a hashed password and role
     hashed_password = get_password_hash(user.password)
-    db_user = models.User(email=user.email, password=hashed_password)
+    db_user = models.User(email=user.email, password=hashed_password, role=role)
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -120,3 +120,11 @@ def delete_history_entry(db: Session, entry_id: int, user_id: int) -> bool:
     db.delete(db_entry)
     db.commit()
     return True
+
+
+def get_all_history(db: Session, limit: int = 1000, type_filter: str = None):
+    """Get all history entries across all users (admin/mentor only)."""
+    query = db.query(models.History).join(models.User)
+    if type_filter:
+        query = query.filter(models.History.type == type_filter)
+    return query.order_by(models.History.created_at.desc()).limit(limit).all()
