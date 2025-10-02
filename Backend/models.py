@@ -65,5 +65,11 @@ class History(Base):
     # Creation timestamp (timezone-aware UTC)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False, index=True)
     
+    # User feedback fields
+    feedback_rating = Column(String, nullable=True)  # 'thumbs_up', 'thumbs_down', or None
+    feedback_comment = Column(Text, nullable=True)  # User's comment explaining the rating
+    feedback_at = Column(DateTime, nullable=True)  # When feedback was submitted
+    
     # Relationship to the user
     user = relationship("User", back_populates="history_entries")
+

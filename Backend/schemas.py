@@ -124,6 +124,9 @@ class HistoryEntry(BaseModel):
     model: str
     created_at: datetime
     parameters: str | None = None
+    feedback_rating: str | None = None  # 'thumbs_up', 'thumbs_down', or None
+    feedback_comment: str | None = None
+    feedback_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -161,6 +164,9 @@ class AdminHistoryEntry(BaseModel):
     model: str
     created_at: datetime
     parameters: str | None = None
+    feedback_rating: str | None = None  # 'thumbs_up', 'thumbs_down', or None
+    feedback_comment: str | None = None
+    feedback_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -192,3 +198,14 @@ class AdminStatistics(BaseModel):
     total_documents: int
     active_users_count: int  # Users with at least one activity
     recent_activity: list[UserActivityStats]
+    # Feedback statistics
+    feedback_thumbs_up: int
+    feedback_thumbs_down: int
+    feedback_total: int
+    feedback_rate: float  # Percentage of documents with feedback
+
+
+# --- Feedback schemas ---
+class SubmitFeedback(BaseModel):
+    rating: str  # 'thumbs_up' or 'thumbs_down'
+    comment: str | None = None

@@ -10,6 +10,7 @@ import json
 import os
 import logging
 from functools import partial
+from datetime import datetime, timezone
 
 # Local summarization and paraphrasing helpers
 from .summarizer import summarize_text, MODELS
@@ -164,6 +165,7 @@ async def summarize_endpoint(
         )
         
         # Save to history if user is provided
+        entry_id = None
         if user_email:
             user = db.query(models.User).filter(models.User.email == user_email).first()
             if user:
@@ -176,13 +178,15 @@ async def summarize_endpoint(
                     model=model_choice,
                     parameters=json.dumps({"summary_length": summary_length})
                 )
-                crud.create_history_entry(db, history_entry)
+                db_entry = crud.create_history_entry(db, history_entry)
+                entry_id = db_entry.id
         
         return {
             "summary": summary,
             "model": model_choice,
             "original_length": len(text_to_summarize.split()),
-            "summary_length": len(summary.split())
+            "summary_length": len(summary.split()),
+            "entry_id": entry_id
         }
     except HTTPException:
         raise
@@ -245,6 +249,7 @@ async def fine_tuned_summarize_endpoint(
         )
         
         # Save to history if user is provided
+        entry_id = None
         if user_email:
             user = db.query(models.User).filter(models.User.email == user_email).first()
             if user:
@@ -257,13 +262,15 @@ async def fine_tuned_summarize_endpoint(
                     model=f"fine-tuned-{model_choice_norm}",
                     parameters=json.dumps({"summary_length": summary_length})
                 )
-                crud.create_history_entry(db, history_entry)
+                db_entry = crud.create_history_entry(db, history_entry)
+                entry_id = db_entry.id
         
         return {
             "summary": summary,
             "model": f"fine-tuned-{model_choice_norm}",
             "original_length": len(text_to_summarize.split()),
-            "summary_length": len(summary.split())
+            "summary_length": len(summary.split()),
+            "entry_id": entry_id
         }
     except HTTPException:
         raise
@@ -435,6 +442,60 @@ def delete_history_entry(
     return {"message": "History entry deleted successfully"}
 
 
+# -------------------- Feedback Endpoints --------------------
+
+@app.post("/history/{entry_id}/feedback")
+def submit_feedback(
+    entry_id: int,
+    payload: schemas.SubmitFeedback,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Submit user feedback (thumbs up/down and comment) for a history entry.
+    
+    Args:
+        entry_id: ID of the history entry
+        payload: Feedback data (rating and optional comment)
+        current_user: Authenticated user
+        
+    Returns:
+        Success message
+    """
+    try:
+        # Verify the entry exists and belongs to the user
+        entry = db.query(models.History).filter(
+            models.History.id == entry_id,
+            models.History.user_id == current_user.id
+        ).first()
+        
+        if not entry:
+            raise HTTPException(status_code=404, detail="History entry not found or access denied")
+        
+        # Validate rating
+        if payload.rating not in ["thumbs_up", "thumbs_down"]:
+            raise HTTPException(status_code=422, detail="Rating must be 'thumbs_up' or 'thumbs_down'")
+        
+        # Update feedback
+        entry.feedback_rating = payload.rating
+        entry.feedback_comment = payload.comment.strip() if payload.comment else None
+        entry.feedback_at = datetime.now(timezone.utc)
+        
+        db.commit()
+        db.refresh(entry)
+        
+        return {
+            "message": "Feedback submitted successfully",
+            "entry_id": entry.id,
+            "rating": entry.feedback_rating
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger("uvicorn.error").exception("Failed to submit feedback")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to submit feedback: {e}")
+
+
 # -------------------- Visualization Endpoints --------------------
 
 @app.post("/visualize/complexity")
@@ -573,6 +634,7 @@ def paraphrase_endpoint(paraphrase_request: schemas.ParaphraseRequest, db: Sessi
                 result["rouge_evaluation"] = {"available": False, "reason": str(rouge_exc)}
         
         # Save to history if user email is provided
+        entry_id = None
         if user_email:
             user = db.query(models.User).filter(models.User.email == user_email).first()
             if user:
@@ -598,8 +660,10 @@ def paraphrase_endpoint(paraphrase_request: schemas.ParaphraseRequest, db: Sessi
                     model=model_name,
                     parameters=json.dumps(parameters)
                 )
-                crud.create_history_entry(db, history_entry)
+                db_entry = crud.create_history_entry(db, history_entry)
+                entry_id = db_entry.id
         
+        result["entry_id"] = entry_id
         return result
     except ValueError as e:
         # Convert ValueErrors from parahrase.py to appropriate HTTP errors
@@ -647,7 +711,10 @@ def get_all_user_history(
                 result_text=entry.result_text,
                 model=entry.model,
                 created_at=entry.created_at,
-                parameters=entry.parameters
+                parameters=entry.parameters,
+                feedback_rating=entry.feedback_rating,
+                feedback_comment=entry.feedback_comment,
+                feedback_at=entry.feedback_at
             )
             admin_entries.append(admin_entry)
         
@@ -742,13 +809,29 @@ def get_admin_statistics(
                 last_activity=last_activity
             ))
         
+        # Calculate feedback statistics
+        feedback_thumbs_up = db.query(models.History).filter(
+            models.History.feedback_rating == "thumbs_up"
+        ).count()
+        
+        feedback_thumbs_down = db.query(models.History).filter(
+            models.History.feedback_rating == "thumbs_down"
+        ).count()
+        
+        feedback_total = feedback_thumbs_up + feedback_thumbs_down
+        feedback_rate = (feedback_total / total_documents * 100) if total_documents > 0 else 0.0
+        
         return schemas.AdminStatistics(
             total_users=total_users,
             total_summaries=total_summaries,
             total_paraphrases=total_paraphrases,
             total_documents=total_documents,
             active_users_count=active_users_count,
-            recent_activity=recent_activity
+            recent_activity=recent_activity,
+            feedback_thumbs_up=feedback_thumbs_up,
+            feedback_thumbs_down=feedback_thumbs_down,
+            feedback_total=feedback_total,
+            feedback_rate=round(feedback_rate, 1)
         )
     except Exception as e:
         logging.getLogger("uvicorn.error").exception("Failed to fetch admin statistics")
