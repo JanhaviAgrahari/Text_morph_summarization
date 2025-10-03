@@ -443,12 +443,15 @@ with tabs[0]:
             <h3 style="font-weight:600;color:#334155">Sign in to Your Account</h3>
         </div>
     """, unsafe_allow_html=True)
-    
+    # Role selection toggle (User vs Admin)
+    st.caption("Select the role you intend to log in as. Admin accounts require appropriate permissions.")
+    desired_role = st.radio("Login Mode", ["User", "Admin"], horizontal=True, key="login_mode_toggle")
+
     with st.form("login_form"):
         email = st.text_input("Email", placeholder="user@example.com")
         password = st.text_input("Password", type="password")
         sign_in = st.form_submit_button("Sign in", use_container_width=True)
-    
+
     if sign_in:
         # Basic client-side validation for email/password
         if not email:
@@ -458,25 +461,38 @@ with tabs[0]:
         elif not password:
             st.error("Please enter your password.")
         else:
-            # Authenticate via backend /login endpoint
             ok, data = api_post("/login", {"email": email, "password": password})
-            if ok:
-                st.success("Login successful")
-                # Persist auth context
+            if not ok:
+                st.error(data)
+            else:
                 st.session_state["token"] = data.get("access_token")
                 st.session_state["logged_in"] = True
                 st.session_state["user_email"] = email
-                # Optionally cache /me
+                # Fetch user profile to inspect role
+                role_value = None
                 try:
                     ok_me, me = api_get("/me", token=st.session_state["token"])  # type: ignore[index]
                     if ok_me and isinstance(me, dict):
                         st.session_state["me"] = me
+                        role_value = me.get("role")
                 except Exception:
                     pass
-                # Rerun to propagate session state into other tabs immediately
+
+                # Evaluate role selection
+                if desired_role == "Admin":
+                    if role_value in {"admin", "mentor"}:
+                        st.success("Admin login successful. You can now open the 'Admin Panel' tab.")
+                        st.info("Navigate to the Admin Panel tab to manage statistics and history.")
+                    else:
+                        st.warning("You selected Admin mode, but your account does not have admin/mentor privileges. Logged in as a standard user.")
+                        st.success("User login successful.")
+                else:
+                    st.success("User login successful.")
+
+                # Flag to optionally auto-scroll or highlight Admin Panel later
+                st.session_state["_login_mode"] = desired_role
+                # Rerun to propagate state
                 st.rerun()
-            else:
-                st.error(data)
 
 
 # Register tab
