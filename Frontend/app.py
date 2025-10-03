@@ -234,6 +234,97 @@ div[data-testid="stFileUploader"] { background: var(--bg-panel); border:1px dash
 css = base_css.replace("BLOCK_COLOR_VARS", color_block).replace("BODY_BG", body_bg)
 st.markdown(css, unsafe_allow_html=True)
 
+# --- Reusable, consistent feedback component (prevents layout jump) ---
+def render_feedback_block(*, entry_id: str, rating_prefix: str, submitted_flag_key: str, title: str):
+    """Render a consistent rating + optional comment UI.
+
+    Parameters
+    ----------
+    entry_id: str
+        History entry id from backend.
+    rating_prefix: str
+        Prefix to namespace session_state keys (e.g. 'sum', 'para', 'ft').
+    submitted_flag_key: str
+        Session key marking feedback submitted (hides block once True).
+    title: str
+        Section title, e.g. 'Rate this summary'.
+    """
+    if not entry_id or st.session_state.get(submitted_flag_key):
+        return
+
+    rating_key = f"{rating_prefix}_feedback_rating_{entry_id}"
+    comment_key = f"{rating_prefix}_feedback_comment_{entry_id}"
+
+    # Outer container with stable styling so vertical position stays predictable
+    with st.container():
+        st.markdown("<div class='feedback-area'>", unsafe_allow_html=True)
+        st.markdown(f"#### 💭 {title}")
+
+        # Initialize keys
+        if rating_key not in st.session_state:
+            st.session_state[rating_key] = None
+
+        col_btns, col_body = st.columns([1, 4])
+        with col_btns:
+            # Buttons: selecting sets state only (Streamlit reruns automatically, no manual rerun)
+            if st.button("👍 Helpful", key=f"{rating_prefix}_thumbs_up_{entry_id}", use_container_width=True):
+                st.session_state[rating_key] = "thumbs_up"
+            if st.button("👎 Not Helpful", key=f"{rating_prefix}_thumbs_down_{entry_id}", use_container_width=True):
+                st.session_state[rating_key] = "thumbs_down"
+
+        with col_body:
+            rating_val = st.session_state.get(rating_key)
+            if rating_val:
+                rating_label = "👍 Helpful" if rating_val == "thumbs_up" else "👎 Not Helpful"
+                st.info(f"Selected: **{rating_label}**")
+                # Just read widget value; don't manually assign after instantiation to avoid StreamlitAPIException
+                st.text_area(
+                    "Add a comment (optional):",
+                    value=st.session_state.get(comment_key, ""),
+                    key=comment_key,
+                    height=80,
+                )
+                submit_col, cancel_col = st.columns([1, 4])
+                with submit_col:
+                    if st.button("✅ Submit Feedback", key=f"{rating_prefix}_submit_feedback_{entry_id}", use_container_width=True):
+                        try:
+                            payload = {
+                                "rating": rating_val,
+                                "comment": (st.session_state.get(comment_key) or "").strip() or None,
+                            }
+                            resp = requests.post(
+                                f"{BACKEND_URL}/history/{entry_id}/feedback",
+                                json=payload,
+                                headers={"Authorization": f"Bearer {st.session_state.get('token')}"},
+                            )
+                            if resp.status_code == 200:
+                                st.success("✅ Thank you for your feedback!")
+                                st.session_state[submitted_flag_key] = True
+                            else:
+                                try:
+                                    detail = resp.json().get("detail", resp.text)
+                                except Exception:
+                                    detail = resp.text
+                                st.error(f"Failed to submit feedback: {detail}")
+                        except Exception as e:  # pragma: no cover
+                            st.error(f"Failed to submit feedback: {e}")
+                with cancel_col:
+                    if st.button("❌ Cancel", key=f"{rating_prefix}_cancel_feedback_{entry_id}"):
+                        st.session_state.pop(rating_key, None)
+                        st.session_state.pop(comment_key, None)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+# Inject small CSS for feedback styling (appended to existing)
+st.markdown(
+    """
+    <style>
+    .feedback-area {border:1px solid var(--border-color); background:var(--bg-panel); padding:0.9rem 1rem; border-radius:14px; margin-top:1.2rem;}
+    .feedback-area .stButton>button {background:linear-gradient(135deg,var(--accent-grad-start),var(--accent-grad-end));}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Header (sticky visual identity)
 st.markdown(
         """
@@ -1110,69 +1201,14 @@ with tabs[5]:  # Tab 5 - Summarization
                     # Reset the processing flag to allow next submission
                     st.session_state['summary_processing'] = False
     
-    # Persistent Feedback UI (shown after any summary generation)
-    if st.session_state.get('last_summary_entry_id') and not st.session_state.get('sum_feedback_submitted'):
-        st.markdown("---")
-        st.markdown("#### 💭 Rate this summary")
-        
-        entry_id = st.session_state['last_summary_entry_id']
-        
-        # Initialize feedback rating in session state if not present
-        if f'sum_feedback_rating_{entry_id}' not in st.session_state:
-            st.session_state[f'sum_feedback_rating_{entry_id}'] = None
-        
-        feedback_col1, feedback_col2 = st.columns([1, 4])
-        
-        with feedback_col1:
-            if st.button("👍 Helpful", key=f"sum_thumbs_up_{entry_id}", use_container_width=True):
-                st.session_state[f'sum_feedback_rating_{entry_id}'] = "thumbs_up"
-                st.rerun()
-            
-            if st.button("👎 Not Helpful", key=f"sum_thumbs_down_{entry_id}", use_container_width=True):
-                st.session_state[f'sum_feedback_rating_{entry_id}'] = "thumbs_down"
-                st.rerun()
-        
-        with feedback_col2:
-            # Show comment box and submit if rating is selected
-            if st.session_state.get(f'sum_feedback_rating_{entry_id}'):
-                rating = st.session_state[f'sum_feedback_rating_{entry_id}']
-                rating_label = "👍 Helpful" if rating == "thumbs_up" else "👎 Not Helpful"
-                st.info(f"Selected: **{rating_label}**")
-                
-                feedback_comment = st.text_area(
-                    "Add a comment (optional):", 
-                    key=f"sum_feedback_comment_{entry_id}",
-                    height=80
-                )
-                
-                submit_col1, submit_col2 = st.columns([1, 4])
-                with submit_col1:
-                    if st.button("✅ Submit Feedback", key=f"sum_submit_feedback_{entry_id}", use_container_width=True):
-                        try:
-                            feedback_payload = {
-                                "rating": rating,
-                                "comment": feedback_comment.strip() if feedback_comment.strip() else None
-                            }
-                            feedback_response = requests.post(
-                                f"{BACKEND_URL}/history/{entry_id}/feedback",
-                                json=feedback_payload,
-                                headers={"Authorization": f"Bearer {st.session_state.get('token')}"}
-                            )
-                            if feedback_response.status_code == 200:
-                                st.success("✅ Thank you for your feedback!")
-                                st.session_state['sum_feedback_submitted'] = True
-                                # Clear the rating from session state
-                                st.session_state.pop(f'sum_feedback_rating_{entry_id}', None)
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error(f"Failed to submit feedback: {feedback_response.json().get('detail', 'Unknown error')}")
-                        except Exception as fb_err:
-                            st.error(f"Failed to submit feedback: {fb_err}")
-                with submit_col2:
-                    if st.button("❌ Cancel", key=f"sum_cancel_feedback_{entry_id}"):
-                        st.session_state.pop(f'sum_feedback_rating_{entry_id}', None)
-                        st.rerun()
+    # Consistent feedback block (summary)
+    if st.session_state.get('last_summary_entry_id'):
+        render_feedback_block(
+            entry_id=st.session_state['last_summary_entry_id'],
+            rating_prefix='sum',
+            submitted_flag_key='sum_feedback_submitted',
+            title='Rate this summary'
+        )
 
 
 # New Paraphrasing tab
@@ -1475,68 +1511,13 @@ with tabs[6]:  # Tab 6 - Paraphrasing
                 else:
                     st.warning("No ROUGE results returned from the backend.")
         
-        # Feedback UI for paraphrasing
-        if st.session_state.get('paraphrase_entry_id') and not st.session_state.get('para_feedback_submitted'):
-            st.markdown("---")
-            st.markdown("#### 💭 Rate this paraphrase")
-            
-            entry_id = st.session_state['paraphrase_entry_id']
-            
-            # Initialize feedback rating in session state if not present
-            if f'para_feedback_rating_{entry_id}' not in st.session_state:
-                st.session_state[f'para_feedback_rating_{entry_id}'] = None
-            
-            feedback_col1, feedback_col2 = st.columns([1, 4])
-            
-            with feedback_col1:
-                if st.button("👍 Helpful", key=f"para_thumbs_up_{entry_id}", use_container_width=True):
-                    st.session_state[f'para_feedback_rating_{entry_id}'] = "thumbs_up"
-                    st.rerun()
-                
-                if st.button("👎 Not Helpful", key=f"para_thumbs_down_{entry_id}", use_container_width=True):
-                    st.session_state[f'para_feedback_rating_{entry_id}'] = "thumbs_down"
-                    st.rerun()
-            
-            with feedback_col2:
-                # Show comment box and submit if rating is selected
-                if st.session_state.get(f'para_feedback_rating_{entry_id}'):
-                    rating = st.session_state[f'para_feedback_rating_{entry_id}']
-                    rating_label = "👍 Helpful" if rating == "thumbs_up" else "👎 Not Helpful"
-                    st.info(f"Selected: **{rating_label}**")
-                    
-                    para_feedback_comment = st.text_area(
-                        "Add a comment (optional):", 
-                        key=f"para_feedback_comment_{entry_id}",
-                        height=80
-                    )
-                    
-                    submit_col1, submit_col2 = st.columns([1, 4])
-                    with submit_col1:
-                        if st.button("✅ Submit Feedback", key=f"para_submit_feedback_{entry_id}", use_container_width=True):
-                            try:
-                                feedback_payload = {
-                                    "rating": rating,
-                                    "comment": para_feedback_comment.strip() if para_feedback_comment.strip() else None
-                                }
-                                feedback_response = requests.post(
-                                    f"{BACKEND_URL}/history/{entry_id}/feedback",
-                                    json=feedback_payload,
-                                    headers={"Authorization": f"Bearer {st.session_state.get('token')}"}
-                                )
-                                if feedback_response.status_code == 200:
-                                    st.success("✅ Thank you for your feedback!")
-                                    st.session_state['para_feedback_submitted'] = True
-                                    st.session_state.pop(f'para_feedback_rating_{entry_id}', None)
-                                    time.sleep(1)
-                                    st.rerun()
-                                else:
-                                    st.error(f"Failed to submit feedback: {feedback_response.json().get('detail', 'Unknown error')}")
-                            except Exception as fb_err:
-                                st.error(f"Failed to submit feedback: {fb_err}")
-                    with submit_col2:
-                        if st.button("❌ Cancel", key=f"para_cancel_feedback_{entry_id}"):
-                            st.session_state.pop(f'para_feedback_rating_{entry_id}', None)
-                            st.rerun()
+        if st.session_state.get('paraphrase_entry_id'):
+            render_feedback_block(
+                entry_id=st.session_state['paraphrase_entry_id'],
+                rating_prefix='para',
+                submitted_flag_key='para_feedback_submitted',
+                title='Rate this paraphrase'
+            )
 
 # Summarization Dataset Evaluation tab
 with tabs[8]:
@@ -2113,7 +2094,6 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                                                 "<li>Custom T5-small model fine-tuned on a specialized dataset</li>" \
                                                 "<li>Optimized for high-quality, contextually relevant summaries</li>" \
                                                 "<li>Enhanced beam search configuration for better outputs</li>" \
-                                                "<li>Comprehensive metrics: ROUGE, BLEU, Perplexity, and Readability</li>" \
                                                 "<li>Efficient processing of longer texts through chunking</li>" \
                                                 "<li>Improved coherence and factual accuracy in generated summaries</li>" \
                                                 "</ul></div>", unsafe_allow_html=True)
@@ -2123,7 +2103,6 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                                                 "<li>Local BART model loaded from fine_tuned_bart_summarizer/</li>" \
                                                 "<li>Strong performance on abstractive summarization</li>" \
                                                 "<li>Beam search decoding tuned for coherent outputs</li>" \
-                                                "<li>Comprehensive metrics: ROUGE, BLEU, Perplexity, and Readability</li>" \
                                                 "<li>Handles longer inputs via chunking</li>" \
                                                 "</ul></div>", unsafe_allow_html=True)
 
@@ -2140,68 +2119,6 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                     # Reset the processing flag to allow next submission
                     st.session_state['ft_summary_processing'] = False
     
-    # Persistent Feedback UI for Fine-tuned Summarization
-    if st.session_state.get('ft_last_entry_id') and not st.session_state.get('ft_feedback_submitted'):
-        st.markdown("---")
-        st.markdown("#### 💭 Rate this summary")
-        
-        entry_id = st.session_state['ft_last_entry_id']
-        
-        # Initialize feedback rating in session state if not present
-        if f'ft_feedback_rating_{entry_id}' not in st.session_state:
-            st.session_state[f'ft_feedback_rating_{entry_id}'] = None
-        
-        feedback_col1, feedback_col2 = st.columns([1, 4])
-        
-        with feedback_col1:
-            if st.button("👍 Helpful", key=f"ft_thumbs_up_{entry_id}", use_container_width=True):
-                st.session_state[f'ft_feedback_rating_{entry_id}'] = "thumbs_up"
-                st.rerun()
-            
-            if st.button("👎 Not Helpful", key=f"ft_thumbs_down_{entry_id}", use_container_width=True):
-                st.session_state[f'ft_feedback_rating_{entry_id}'] = "thumbs_down"
-                st.rerun()
-        
-        with feedback_col2:
-            # Show comment box and submit if rating is selected
-            if st.session_state.get(f'ft_feedback_rating_{entry_id}'):
-                rating = st.session_state[f'ft_feedback_rating_{entry_id}']
-                rating_label = "👍 Helpful" if rating == "thumbs_up" else "👎 Not Helpful"
-                st.info(f"Selected: **{rating_label}**")
-                
-                ft_feedback_comment = st.text_area(
-                    "Add a comment (optional):", 
-                    key=f"ft_feedback_comment_{entry_id}",
-                    height=80
-                )
-                
-                submit_col1, submit_col2 = st.columns([1, 4])
-                with submit_col1:
-                    if st.button("✅ Submit Feedback", key=f"ft_submit_feedback_{entry_id}", use_container_width=True):
-                        try:
-                            feedback_payload = {
-                                "rating": rating,
-                                "comment": ft_feedback_comment.strip() if ft_feedback_comment.strip() else None
-                            }
-                            feedback_response = requests.post(
-                                f"{BACKEND_URL}/history/{entry_id}/feedback",
-                                json=feedback_payload,
-                                headers={"Authorization": f"Bearer {st.session_state.get('token')}"}
-                            )
-                            if feedback_response.status_code == 200:
-                                st.success("✅ Thank you for your feedback!")
-                                st.session_state['ft_feedback_submitted'] = True
-                                st.session_state.pop(f'ft_feedback_rating_{entry_id}', None)
-                                time.sleep(1)
-                                st.rerun()
-                            else:
-                                st.error(f"Failed to submit feedback: {feedback_response.json().get('detail', 'Unknown error')}")
-                        except Exception as fb_err:
-                            st.error(f"Failed to submit feedback: {fb_err}")
-                with submit_col2:
-                    if st.button("❌ Cancel", key=f"ft_cancel_feedback_{entry_id}"):
-                        st.session_state.pop(f'ft_feedback_rating_{entry_id}', None)
-                        st.rerun()
 
     # Persistent display (after first generation) allowing language toggle
     if st.session_state.get('ft_last_summary') and not generate_clicked:
@@ -2292,6 +2209,15 @@ with tabs[7]:  # Tab 7 - Fine-tuned Summarization
                                 "</ul></div>", unsafe_allow_html=True)
 
         _render_ft_summary_block_external()
+
+    # Feedback (moved below persistent summary so it appears under content)
+    if st.session_state.get('ft_last_entry_id'):
+        render_feedback_block(
+            entry_id=st.session_state['ft_last_entry_id'],
+            rating_prefix='ft',
+            submitted_flag_key='ft_feedback_submitted',
+            title='Rate this summary'
+        )
 
 
 # -------------------- History Tab --------------------
