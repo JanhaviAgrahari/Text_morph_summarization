@@ -1,0 +1,66 @@
+### Python caches / bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+### Local databases / state
+*.db
+*.sqlite
+*.sqlite3
+database/
+
+### Virtual environments
+env/
+venv/
+.venv/
+summary_env/
+
+### IDE / VCS
+.idea/
+.vscode/
+.git/
+.gitignore
+
+### Notebooks (not needed in runtime image)
+*.ipynb
+
+### Large raw datasets & model training artifacts (mount at runtime instead)
+dataset/
+summarization_dataset/
+paraphrase dataset/
+fine_tuned_t5_summarizer/
+fine_tuned_bart_summarizer/
+bart_paraphrasing_model/
+saved_paraphrasing_model/
+
+### Uploaded / user-generated files (use volume)
+uploaded_pdfs/
+Backend/uploaded_pdfs/
+
+### Reports / generated metrics
+rouge_score/
+
+### Documents & archives not required at build
+*.pdf
+*.docx
+*.zip
+*.tar
+*.gz
+
+### Environment / secrets (supply via docker run -e or compose)
+.env
+Backend/.env
+
+### Misc
+*.log
+*.tmp
+*.bak
+
+### Hugging Face / transformers caches (should be mounted externally if needed)
+~/.cache/
+/.cache/
+hf_cache/
+
+### Generic placeholder to exclude fine_tuned prefix
+fine_tuned*

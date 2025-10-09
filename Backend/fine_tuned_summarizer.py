@@ -12,9 +12,9 @@ from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 
 # Local model directories
-_ROOT = os.path.dirname(os.path.dirname(__file__))
-T5_MODEL_DIR = os.path.abspath(os.path.join(_ROOT, "fine_tuned_t5_summarizer"))
-BART_MODEL_DIR = os.path.abspath(os.path.join(_ROOT, "fine_tuned_bart_summarizer"))
+import os
+T5_MODEL_DIR = os.path.join(os.getcwd(), "fine_tuned_t5_summarizer")
+BART_MODEL_DIR = os.path.join(os.getcwd(), "fine_tuned_bart_summarizer")
 
 # Cache of loaded models: {"t5": (tok, model, device), "bart": (...)}
 _LOADED: dict[str, tuple[AutoTokenizer, AutoModelForSeq2SeqLM, torch.device]] = {}

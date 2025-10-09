@@ -5,6 +5,11 @@ Supports both T5 and Pegasus models with appropriate prompt handling.
 import logging
 from typing import Dict, Tuple, List, Optional
 
+import os
+
+    # If you use any model/data directories, use os.path.join(os.getcwd(), ...) for Docker compatibility
+    # Example: model_path = os.path.join(os.getcwd(), 'models', 'your_model')
+
 # Optional imports with fallbacks
 try:
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
