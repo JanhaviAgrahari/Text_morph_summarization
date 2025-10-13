@@ -5,6 +5,8 @@ from datetime import datetime
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
+    # Optional role at signup; backend may override for security
+    role: str | None = None
 
     @field_validator("password")
     @classmethod
@@ -21,6 +23,17 @@ class UserCreate(BaseModel):
         if not re.search(r"[^A-Za-z0-9]", v):
             raise ValueError("Password must include at least one special character.")
         return v
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
+        v_norm = str(v).strip().lower()
+        allowed = {"user", "admin", "mentor"}
+        if v_norm not in allowed:
+            raise ValueError("role must be one of: user, admin, mentor")
+        return v_norm
 
 class UserLogin(BaseModel):
     email: EmailStr

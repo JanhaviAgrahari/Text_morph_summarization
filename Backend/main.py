@@ -58,7 +58,14 @@ def register(user: schemas.UserCreate, db: Session = Depends(get_db)):
     db_user = db.query(models.User).filter(models.User.email == user.email).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
-    created = crud.create_user(db, user)
+
+    # Decide role: default 'user'; allow 'admin' or 'mentor' only if explicitly enabled
+    requested_role = (user.role or "user").lower()
+    allow_admin_signup = os.getenv("ALLOW_ADMIN_SIGNUP", "false").lower() in {"1", "true", "yes", "on"}
+    if requested_role in {"admin", "mentor"} and not allow_admin_signup:
+        requested_role = "user"
+
+    created = crud.create_user(db, user, role=requested_role)
     return created
 
 @app.post("/login", response_model=schemas.Token)

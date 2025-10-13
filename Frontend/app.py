@@ -510,6 +510,13 @@ with tabs[1]:
     with st.form("register_form"):
         reg_email = st.text_input("Email", placeholder="user@example.com")
         reg_password = st.text_input("Password", type="password")
+        reg_password2 = st.text_input("Confirm Password", type="password")
+        reg_role = st.selectbox(
+            "Role",
+            ["User", "Admin"],
+            index=0,
+            help="Request Admin only if you intend to manage the admin panel. The server may restrict admin signups.",
+        )
         register_clicked = st.form_submit_button("Create account", use_container_width=True)
     
     if register_clicked:
@@ -520,13 +527,18 @@ with tabs[1]:
             st.error("Please enter a valid email address.")
         elif not reg_password:
             st.error("Please enter a password.")
+        elif reg_password != reg_password2:
+            st.error("Passwords do not match.")
         else:
             ok_pw, err = _valid_password(reg_password)
             if not ok_pw:
                 st.error(err)
             else:
-        # Create account via backend /register endpoint
-                ok, data = api_post("/register", {"email": reg_email, "password": reg_password})
+                # Create account via backend /register endpoint (role is advisory; server enforces policy)
+                ok, data = api_post(
+                    "/register",
+                    {"email": reg_email, "password": reg_password, "role": reg_role.lower()},
+                )
                 if ok:
                     st.success("Account created. You can sign in now.")
                 else:
