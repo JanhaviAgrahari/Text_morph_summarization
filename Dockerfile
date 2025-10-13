@@ -1,15 +1,16 @@
 # ============================================================
-# Dockerfile for Text Morph: Advanced Summarization using AI
-# Python 3.10 | Streamlit + FastAPI | Torch + Transformers
+# Optimized Dockerfile for Text Morph: Advanced Summarization using AI
+# Faster rebuilds using Docker layer caching
 # ============================================================
 
 FROM python:3.10-slim
 
-# Set workdir
+# Set working directory
 WORKDIR /app
 
-# System dependencies (for torch, pdfminer, pypdf2, etc.)
-# Note: libgl1-mesa-glx is not present in some newer Debian slim images; use libgl1 instead.
+# ------------------------------------------------------------
+# Step 1: System dependencies (only installed once)
+# ------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libglib2.0-0 \
@@ -18,14 +19,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install dependencies
+# ------------------------------------------------------------
+# Step 2: Copy only dependency files (cached layer)
+# ------------------------------------------------------------
 COPY requirements.txt .
+
+# Install dependencies (cached unless requirements.txt changes)
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire project
+# ------------------------------------------------------------
+# Step 3: Copy the rest of the project files
+# ------------------------------------------------------------
 COPY . .
 
-# Environment variables
+
+# ------------------------------------------------------------
+# Step 4: Environment variables
+# ------------------------------------------------------------
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8080
@@ -34,15 +44,21 @@ ENV STREAMLIT_SERVER_HEADLESS=true
 ENV STREAMLIT_SERVER_PORT=${PORT}
 ENV STREAMLIT_SERVER_ENABLECORS=false
 
-EXPOSE ${PORT} ${BACKEND_PORT}
+# Cloud Run exposes only one external port (PORT)
+EXPOSE ${PORT}
 
-# Copy and make start script executable
-COPY start.sh /start.sh
-RUN chmod +x /start.sh
+# ------------------------------------------------------------
+# Step 5: Start script setup
+# ------------------------------------------------------------
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
-# Create a non-root user (optional but recommended)
+# Optional: create non-root user for better security
 RUN useradd -ms /bin/bash appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Start both FastAPI (backend) and Streamlit (frontend)
-CMD ["/start.sh"]
+# ------------------------------------------------------------
+# Step 6: Default start command
+# ------------------------------------------------------------
+CMD ["/app/start.sh"]
+

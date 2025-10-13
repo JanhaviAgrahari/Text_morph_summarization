@@ -25,18 +25,9 @@ summary_env/
 ### Notebooks (not needed in runtime image)
 *.ipynb
 
-### Large raw datasets & model training artifacts (mount at runtime instead)
-dataset/
-summarization_dataset/
-paraphrase dataset/
-fine_tuned_t5_summarizer/
-fine_tuned_bart_summarizer/
-bart_paraphrasing_model/
-saved_paraphrasing_model/
 
-### Uploaded / user-generated files (use volume)
-uploaded_pdfs/
-Backend/uploaded_pdfs/
+
+
 
 ### Reports / generated metrics
 rouge_score/

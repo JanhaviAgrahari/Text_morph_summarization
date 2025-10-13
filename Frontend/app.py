@@ -5,7 +5,7 @@ import os
 import csv
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from typing import Optional, Tuple, Any
 
@@ -41,6 +41,9 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 API_URL = BACKEND_URL  # Alias for legacy references
 ROUGE_OUTPUT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rouge_score"))
 os.makedirs(ROUGE_OUTPUT_DIR, exist_ok=True)
+
+# Use India Standard Time (IST) for all UI timestamps in History/Admin views
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
 
 # --- Unified Translation Utilities (improved quality) ---
 # We centralize translation so all tabs use the same logic and higher quality models (IndicTrans2) when available.
@@ -2286,7 +2289,7 @@ with tabs[11]:  # History (moved to last)
             if "entries" in history_data and history_data["entries"]:
                 for entry in history_data["entries"]:
                     entry_type = entry["type"].capitalize()
-                    # Parse timestamp as UTC, then convert to local timezone for display
+                    # Parse timestamp as UTC, then convert to IST for display
                     created_raw = (entry.get("created_at") or "").strip()
                     dt = None
                     # Try ISO 8601 parse first
@@ -2308,8 +2311,8 @@ with tabs[11]:  # History (moved to last)
                     # Assume UTC when tzinfo missing
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=timezone.utc)
-                    local_dt = dt.astimezone()  # convert to local timezone
-                    formatted_date = local_dt.strftime("%B %d, %Y at %I:%M %p")
+                    ist_dt = dt.astimezone(IST_TZ)  # convert to IST timezone
+                    formatted_date = ist_dt.strftime("%B %d, %Y at %I:%M %p IST")
                     
                     # Create an expandable section for each entry
                     with st.expander(f"{entry_type} on {formatted_date}", expanded=False):
@@ -3545,7 +3548,7 @@ with tabs[12]:  # Admin Panel (mentor/admin only)
                                     iso = created_raw.replace("Z", "+00:00")
                                     dt = datetime.fromisoformat(iso)
                                     if dt.tzinfo is not None:
-                                        dt = dt.astimezone()
+                                        dt = dt.astimezone(IST_TZ)
                                 except Exception:
                                     dt = None
                                 if dt is None:
@@ -3553,17 +3556,17 @@ with tabs[12]:  # Admin Panel (mentor/admin only)
                                         try:
                                             dt = datetime.strptime(created_raw, fmt)
                                             from datetime import timezone as dt_tz
-                                            dt = dt.replace(tzinfo=dt_tz.utc).astimezone()
+                                            dt = dt.replace(tzinfo=dt_tz.utc).astimezone(IST_TZ)
                                             break
                                         except Exception:
                                             continue
                                 if dt is None:
                                     from datetime import timezone as dt_tz
-                                    dt = datetime.utcnow().replace(tzinfo=dt_tz.utc).astimezone()
+                                    dt = datetime.utcnow().replace(tzinfo=dt_tz.utc).astimezone(IST_TZ)
                                 if dt.tzinfo is None:
                                     from datetime import timezone as dt_tz
-                                    dt = dt.replace(tzinfo=dt_tz.utc).astimezone()
-                                created_at_str = dt.strftime("%B %d, %Y at %I:%M %p")
+                                    dt = dt.replace(tzinfo=dt_tz.utc).astimezone(IST_TZ)
+                                created_at_str = dt.strftime("%B %d, %Y at %I:%M %p IST")
                                 
                                 # Type styling
                                 type_icon = "📝" if entry_type == "summary" else "✏️"
@@ -3604,8 +3607,11 @@ with tabs[12]:  # Admin Panel (mentor/admin only)
                                                     fb_iso = feedback_at.replace("Z", "+00:00")
                                                     fb_dt = datetime.fromisoformat(fb_iso)
                                                     if fb_dt.tzinfo is not None:
-                                                        fb_dt = fb_dt.astimezone()
-                                                    feedback_at_str = fb_dt.strftime("%B %d, %Y at %I:%M %p")
+                                                        fb_dt = fb_dt.astimezone(IST_TZ)
+                                                    else:
+                                                        from datetime import timezone as dt_tz
+                                                        fb_dt = fb_dt.replace(tzinfo=dt_tz.utc).astimezone(IST_TZ)
+                                                    feedback_at_str = fb_dt.strftime("%B %d, %Y at %I:%M %p IST")
                                                     st.markdown(f"*Submitted:* {feedback_at_str}")
                                                 except Exception:
                                                     st.markdown(f"*Submitted:* {feedback_at}")

@@ -1,3 +1,5 @@
+numpy<2
+
 streamlit
 fastapi
 uvicorn
@@ -5,7 +7,8 @@ python-jose
 passlib[bcrypt]
 bcrypt==4.0.1  # Pinned to avoid passlib "error reading bcrypt version" warning seen with newer bcrypt
 sqlalchemy
-torch
+torch==2.2.2+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
 transformers
 sentencepiece
 nltk
